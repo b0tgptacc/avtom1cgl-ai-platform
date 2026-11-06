@@ -67,6 +67,12 @@ INSTRUCTIONS = """# Правила работы (стенд агентов {comp
   в итоговом ответе они автоматически заменятся на настоящие значения.
 - Интернета нет. Не пытайся устанавливать пакеты из сети и не обращайся к внешним сайтам.
 
+## Профиль задачи
+- Перед каждым запросом распределитель добавляет системный `TASK PROFILE`. Он задаёт допустимый метод работы
+  для перевода, извлечения фактов, обезличивания, расчёта, создания документа или общего запроса.
+- Следуй этому профилю; не заменяй проверяемый инструмент свободным рассуждением. Если данных, файла или
+  подходящего инструмента нет, сообщи короткий следующий шаг вместо ошибки, выдумывания фактов или установки ПО.
+
 ## Навыки
 - Перед задачей посмотри список навыков: навыки отдела и общие навыки уже описывают, как решать типовые задачи.
 - Решил новую повторяющуюся задачу (несколько шагов, пригодится коллегам) — сохрани навык:
@@ -172,7 +178,7 @@ skills:
     - /skills/tools          # document-tools: перевод командой translate-document — только у Hermes
 # без интернета, браузера и картинок: их содержимое не проходит маскирование
 platform_toolsets:
-  api_server: [terminal, file, code_execution, skills, todo, memory, session_search, delegation]
+  api_server: [terminal, file, code_execution, skills, todo]
 # подтверждать команды в LibreChat некому — без этого Hermes ждёт ответа 5 минут и отменяет команду.
 # Допустимо: агент заперт в своём контейнере без сети и чужих данных; жёсткий запрет опасных команд остаётся
 approvals:
@@ -202,7 +208,10 @@ def openclaw_config(agent_key: str, token: str) -> str:
         }}},
         "agents": {"defaults": {"model": f"gw/{AGENT_MODEL}", "workspace": "/home/node/.openclaw/workspace"}},
         "skills": {"load": {"extraDirs": ["/skills/dept", "/skills/company", "/skills/common"]}},
-        "tools": {"exec": {"timeoutSeconds": 3600}},       # OCR и перевод большого документа — долго
+        "tools": {
+            "profile": "coding",  # fs + runtime only; no browser/search/messaging surface in corporate document profile
+            "exec": {"timeoutSeconds": 3600},
+        },
     }, ensure_ascii=False, indent=2)
 
 

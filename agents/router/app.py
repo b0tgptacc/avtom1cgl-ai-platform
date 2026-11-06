@@ -23,6 +23,7 @@ from pathlib import Path
 
 import httpx
 import jwt
+from profiles import apply_profile_policy
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -211,11 +212,17 @@ async def agent_chat(request: Request) -> Response:
     if engine not in user.get("engines", {}):
         mine = ", ".join(ENGINES[e]["title"] for e in user.get("engines", {}) if e in ENGINES)
         return _deny(403, f"Стенд агентов: {ENGINES[engine]['title']} вам не подключён — выберите «Агент {mine}».")
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError:
+        return _deny(400, "тело запроса должно быть JSON")
+    if not isinstance(body, dict):
+        return _deny(400, "тело запроса должно быть JSON-объектом")
     body["model"] = ENGINES[engine]["model"]
     for m in body.get("messages") or []:                # строку «⏱ время · оценить» агенту в истории не отдаём
         if m.get("role") == "assistant" and isinstance(m.get("content"), str):
             m["content"] = FOOTER_RE.sub("", m["content"])
+    body, profile = apply_profile_policy(body)
     conv = request.headers.get("x-conversation-id", "")
     headers = {"Authorization": f"Bearer {user['engines'][engine]['key']}"}
     if conv and re.fullmatch(r"[\w-]{1,100}", conv):
@@ -230,7 +237,7 @@ async def agent_chat(request: Request) -> Response:
         msgs = body.get("messages") or []
         body["messages"] = [m for m in msgs if m.get("role") in ("system", "developer")] + \
             [m for m in msgs if m.get("role") == "user"][-1:]
-    log.info("chat %s %s conv=%s stream=%s", engine, user["slug"], conv[:8], bool(body.get("stream")))
+    log.info("chat %s %s profile=%s conv=%s stream=%s", engine, user["slug"], profile, conv[:8], bool(body.get("stream")))
     url = f"http://agent-{engine}-{user['slug']}:{ENGINES[engine]['port']}/v1/chat/completions"
     try:
         return await _agent_proxy(url, headers, body, engine, user, conv)

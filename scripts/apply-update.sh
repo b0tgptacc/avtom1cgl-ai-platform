@@ -7,7 +7,7 @@ set -euo pipefail
 N=$(realpath "${1:?папка deploy из нового архива}")
 GW=/opt/avtom1cgl
 LC=/opt/librechat
-[[ -f "$N/docker-compose.yml" && -d "$N/ocr-ru" ]] || { echo "!! в $N нет docker-compose.yml и ocr-ru — укажите папку deploy"; exit 1; }
+[[ -f "$N/docker-compose.yml" && -d "$N/ocr-ru" && -d "$N/keypool" ]] || { echo "!! в $N нет docker-compose.yml, ocr-ru или keypool — укажите полный release bundle"; exit 1; }
 step() { echo; echo "=== $1"; }
 
 step "Резервная копия перед обновлением"
@@ -20,9 +20,9 @@ cp "$GW/litellm/config.yaml" "$GW/litellm/config.yaml.bak-$STAMP"
 step "Код шлюза: presidio-ru, ocr-ru, обработчик маскирования, скрипты"
 find "$N" -type f \( -name '*.py' -o -name '*.sh' -o -name '*.yml' -o -name '*.yaml' -o -name '*.txt' -o -name '*.md' \
      -o -name '*.conf' -o -name 'Dockerfile' -o -name '.env.example' \) -exec sed -i 's/\r$//' {} +
-rm -rf "$GW/ocr-ru" "$GW/doc-translate" "$GW/agents"
+rm -rf "$GW/ocr-ru" "$GW/doc-translate" "$GW/agents" "$GW/keypool"
 cp -r "$N/presidio-ru/." "$GW/presidio-ru/"
-cp -r "$N/ocr-ru" "$N/doc-translate" "$N/agents" "$GW/"
+cp -r "$N/ocr-ru" "$N/doc-translate" "$N/agents" "$N/keypool" "$GW/"
 mkdir -p "$GW/librechat" && rm -rf "$GW/librechat/skill" && cp -r "$N/librechat/skill" "$GW/librechat/"   # общие навыки стенда агентов
 cp "$N/litellm/pii_guard.py" "$GW/litellm/"
 cp -r "$N/litellm/tests" "$GW/litellm/"
@@ -30,7 +30,7 @@ cp "$N"/scripts/*.sh "$GW/scripts/" && chmod +x "$GW"/scripts/*.sh "$GW"/litellm
 cp "$N/docker-compose.yml" "$GW/"
 # код читают непривилегированные пользователи в контейнерах (dt, ocr, presidio, агенты): после переноса с Windows
 # файлы бывают только для владельца (600) — тогда сервис падает с Permission denied на app.py
-chmod -R a+rX,go-w "$GW/presidio-ru" "$GW/ocr-ru" "$GW/doc-translate" "$GW/agents" "$GW/librechat/skill" \
+chmod -R a+rX,go-w "$GW/presidio-ru" "$GW/ocr-ru" "$GW/doc-translate" "$GW/agents" "$GW/keypool" "$GW/librechat/skill" \
     "$GW/litellm/pii_guard.py" "$GW/litellm/tests"
 
 step "Конфиги шлюза: дописать недостающее"
@@ -49,6 +49,7 @@ grep -q 'proxy_read_timeout 600s' "$GW/nginx/ai.conf" || {
     sed -i 's/proxy_read_timeout 300s;/proxy_read_timeout 600s;\n        proxy_send_timeout 600s;/' "$GW/nginx/ai.conf"
     echo "nginx: таймаут 600 с"; }
 grep -q '^OCR_API_KEY=' "$GW/.env" || { echo "OCR_API_KEY=$(openssl rand -hex 24)" >> "$GW/.env"; echo ".env: OCR_API_KEY"; }
+grep -q '^KEYPOOL_AUTH_TOKEN=' "$GW/.env" || { echo "KEYPOOL_AUTH_TOKEN=$(openssl rand -hex 24)" >> "$GW/.env"; echo ".env: KEYPOOL_AUTH_TOKEN"; }
 for k in DOC_MCP_KEY DOC_INTERNAL_KEY; do     # инструмент агента «перевод файла»
     grep -q "^$k=" "$GW/.env" || { echo "$k=$(openssl rand -hex 24)" >> "$GW/.env"; echo ".env: $k"; }
 done

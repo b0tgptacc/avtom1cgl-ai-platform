@@ -57,6 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           docker build --pull -t avtom1cgl/agents-router-ci:local agents/router
+          docker build --pull -t avtom1cgl/upstream-keypool-ci:local keypool
           docker build --pull -t avtom1cgl/presidio-ru-ci:local presidio-ru
           docker build --pull -t avtom1cgl/ocr-ru-ci:local ocr-ru
           docker build --pull -t avtom1cgl/doc-translate-ci:local doc-translate
