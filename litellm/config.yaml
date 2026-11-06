@@ -5,16 +5,16 @@ model_list:
   - model_name: qwen                                   # имя, которое видит LibreChat
     litellm_params:
       model: openai/Qwen/Qwen3.8-Flash-Next-FP8   # например openai/qwen-flash — уточнить у владельцев LiteLLM
-      api_base: os.environ/REMOTE_LITELLM_BASE         # https://<удалённый-litellm>/v1
-      api_key: os.environ/REMOTE_LITELLM_KEY
+      api_base: http://upstream-keypool:8081/v1
+      api_key: os.environ/KEYPOOL_AUTH_TOKEN
 
   # та же модель без рассуждений (reasoning) — для перевода и деловых текстов: ответ в разы быстрее.
   # Проверено на удалённом LiteLLM 21.10: chat_template_kwargs.enable_thinking=false → reasoning_tokens 0.
   - model_name: qwen-fast
     litellm_params:
       model: openai/Qwen/Qwen3.8-Flash-Next-FP8
-      api_base: os.environ/REMOTE_LITELLM_BASE
-      api_key: os.environ/REMOTE_LITELLM_KEY
+      api_base: http://upstream-keypool:8081/v1
+      api_key: os.environ/KEYPOOL_AUTH_TOKEN
       extra_body:
         chat_template_kwargs:
           enable_thinking: false

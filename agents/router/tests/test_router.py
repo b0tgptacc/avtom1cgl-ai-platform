@@ -79,7 +79,10 @@ def test_routing(router):
            headers={"Authorization": "Bearer rk-librechat", "X-User-Email": "ivanov@corp.local", "X-Conversation-Id": "conv-2"})
     assert calls[-1]["url"] == "http://agent-openclaw-ivanov:18789/v1/chat/completions"
     assert calls[-1]["body"]["user"] == "librechat-conv-2" and calls[-1]["body"]["model"] == "openclaw"
-    assert calls[-1]["body"]["messages"] == [hist[0], hist[3]]       # история — в сессии OpenClaw
+    assert calls[-1]["body"]["messages"][0] == hist[0]                 # system message stays first
+    assert calls[-1]["body"]["messages"][1]["role"] == "developer"
+    assert "GENERAL" in calls[-1]["body"]["messages"][1]["content"]
+    assert calls[-1]["body"]["messages"][2] == hist[3]                 # only the newest user message remains
 
 
 def test_llm_keys(router):

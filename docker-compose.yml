@@ -52,6 +52,22 @@ services:
     depends_on: [doc-translate]
     networks: [ai-net]
 
+  # Внутренний key pool: распределяет уже замаскированные запросы по нескольким ключам одного upstream.
+  # REMOTE_LITELLM_KEYS — comma/newline-separated дополнительные ключи; пусто = безопасный singleton legacy key.
+  upstream-keypool:
+    build: ./keypool
+    image: avtom1cgl/upstream-keypool:1.0
+    restart: unless-stopped
+    environment:
+      UPSTREAM_BASE: ${REMOTE_LITELLM_BASE}
+      UPSTREAM_API_KEY: ${REMOTE_LITELLM_KEY}
+      UPSTREAM_API_KEYS: ${REMOTE_LITELLM_KEYS:-}
+      KEYPOOL_AUTH_TOKEN: ${KEYPOOL_AUTH_TOKEN}
+      KEYPOOL_MAX_ATTEMPTS: ${KEYPOOL_MAX_ATTEMPTS:-2}
+      KEYPOOL_COOLDOWN_SECONDS: ${KEYPOOL_COOLDOWN_SECONDS:-30}
+    mem_limit: 256m
+    networks: [ai-net]
+
   litellm:
     image: ghcr.io/berriai/litellm:v1.106.1  # = main-stable на 21.10.2026; при обновлении перепроверить маскирование (smoke-test)
     restart: unless-stopped
@@ -63,11 +79,10 @@ services:
       # - ./certs/internal-ca.crt:/usr/local/share/ca-certificates/internal-ca.crt:ro
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      REMOTE_LITELLM_BASE: ${REMOTE_LITELLM_BASE}
-      REMOTE_LITELLM_KEY: ${REMOTE_LITELLM_KEY}
+      KEYPOOL_AUTH_TOKEN: ${KEYPOOL_AUTH_TOKEN}
       PRESIDIO_ANALYZER_API_BASE: http://presidio-analyzer:3000
       # SSL_CERT_FILE: /usr/local/share/ca-certificates/internal-ca.crt
-    depends_on: [presidio-analyzer]
+    depends_on: [presidio-analyzer, upstream-keypool]
     networks: [ai-net]
 
   nginx:
