@@ -1,0 +1,44 @@
+# Дописать/заменить в /opt/librechat/.env (основа — .env.example из репозитория LibreChat). chmod 600.
+
+HOST=0.0.0.0
+PORT=3080
+DOMAIN_CLIENT=https://ai.<домен>.local
+DOMAIN_SERVER=https://ai.<домен>.local
+
+# секреты — сгенерировать: openssl rand -hex 32 (CREDS_KEY, JWT_*), openssl rand -hex 16 (CREDS_IV)
+CREDS_KEY=<64 hex>
+CREDS_IV=<32 hex>
+JWT_SECRET=<64 hex>
+JWT_REFRESH_SECRET=<64 hex>
+MEILI_MASTER_KEY=<openssl rand -hex 24>
+
+# ключи моделей: прямых ключей провайдеров НЕТ — только наш шлюз
+LITELLM_MASTER_KEY=<тот же, что в /opt/avtom1cgl/.env>
+# REMOTE_LITELLM_BASE / REMOTE_LITELLM_KEY — только на этапе 2 (агенты 1С и Б24)
+
+# вход только через AD
+ALLOW_EMAIL_LOGIN=true            # форма логина нужна для LDAP
+ALLOW_REGISTRATION=false
+ALLOW_SOCIAL_LOGIN=false
+ALLOW_SOCIAL_REGISTRATION=false
+ALLOW_PASSWORD_RESET=false
+
+LDAP_URL=ldaps://<dc01>.<домен>.local:636
+LDAP_BIND_DN=CN=svc-librechat,OU=Service Accounts,DC=<домен>,DC=local
+LDAP_BIND_CREDENTIALS=<пароль служебной учётки>
+LDAP_USER_SEARCH_BASE=DC=<домен>,DC=local
+# вход по логину Windows и только для членов группы AI-Pilot
+LDAP_SEARCH_FILTER=(&(sAMAccountName={{username}})(memberOf=CN=AI-Pilot,OU=Groups,DC=<домен>,DC=local))
+LDAP_LOGIN_USES_USERNAME=true
+LDAP_ID=sAMAccountName
+LDAP_USERNAME=sAMAccountName
+LDAP_EMAIL=mail
+LDAP_FULL_NAME=displayName
+LDAP_CA_CERT_PATH=/app/certs/internal-ca.crt   # корневой сертификат внутреннего ЦС (смонтировать в контейнер)
+
+# поиск по загруженным файлам (rag_api): эмбеддинги через удалённый LiteLLM, если там есть модель эмбеддингов.
+# Если нет — на этапе 1 поиск по файлам не включаем. Имена переменных сверить с документацией rag_api своей версии.
+# EMBEDDINGS_PROVIDER=openai
+# RAG_OPENAI_BASEURL=https://<удалённый-litellm>/v1
+# RAG_OPENAI_API_KEY=<ключ>
+# EMBEDDINGS_MODEL=<модель эмбеддингов>

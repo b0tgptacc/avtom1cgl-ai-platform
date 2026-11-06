@@ -1,0 +1,16 @@
+# Копируется в /opt/librechat рядом с docker-compose.yml из репозитория LibreChat.
+# Убирает публикацию порта (наружу ходим только через nginx), подключает librechat.yaml и общую сеть ai-net.
+
+services:
+  api:
+    ports: !reset []
+    volumes:
+      - type: bind
+        source: ./librechat.yaml
+        target: /app/librechat.yaml
+      - ./certs:/app/certs:ro        # корневой сертификат внутреннего ЦС для LDAPS
+    networks: [default, ai-net]
+
+networks:
+  ai-net:
+    external: true

@@ -1,0 +1,49 @@
+name: Create source release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out selected revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+          test -z "$(git status --porcelain)"
+
+      - name: Package exact source revision
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --prefix="avtom1cgl-${TAG}/" -o "avtom1cgl-${TAG}.tar.gz" "$GITHUB_SHA"
+          sha256sum "avtom1cgl-${TAG}.tar.gz" > "avtom1cgl-${TAG}.tar.gz.sha256"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" "avtom1cgl-${TAG}.tar.gz" "avtom1cgl-${TAG}.tar.gz.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --generate-notes

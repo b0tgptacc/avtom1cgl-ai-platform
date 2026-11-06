@@ -1,0 +1,38 @@
+# Runtime secrets and certificates
+.env
+.env.*
+!.env.example
+nginx/certs/
+certs/
+*.pem
+*.key
+*.p12
+
+# Live application state and user data
+agents-data/
+uploads/
+images/
+logs/
+data-node/
+meili_data*/
+
+# Generated backups, restore/update artefacts, reports
+*.bak
+*.bak-*
+*.tar
+*.tar.gz
+*.sha256
+reports/
+
+# Python and test artefacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor and OS artefacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

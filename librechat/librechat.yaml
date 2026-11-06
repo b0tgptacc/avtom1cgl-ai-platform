@@ -1,0 +1,50 @@
+# Конфигурация LibreChat для пилота.
+# version — взять из librechat.example.yaml той версии LibreChat, которая установлена.
+version: <из librechat.example.yaml>
+cache: true
+
+interface:
+  privacyPolicy:
+    externalUrl: ""
+  # этап 1 — только чат; MCP и внешние инструменты включаем на этапе 2
+  mcpServers:
+    use: false
+    create: false
+    share: false
+
+registration:
+  socialLogins: []
+
+endpoints:
+  custom:
+    # все запросы — через LiteLLM на ВМ: маскирование ПДн выполняется на каждом запросе
+    - name: "Qwen"
+      apiKey: "${LITELLM_MASTER_KEY}"
+      baseURL: "http://litellm:4000/v1"
+      models:
+        default: ["qwen-fast", "qwen"]   # qwen-fast — без рассуждений, qwen — с рассуждениями
+        fetch: false
+      titleConvo: true
+      titleModel: "qwen-fast"     # заголовки чатов — тоже через маскирование
+      summarize: false
+      modelDisplayLabel: "Qwen"
+      # окно контекста модели (максимум удалённого LiteLLM — 270 тыс. токенов); без этого LibreChat берёт
+      # маленькое значение по умолчанию и молча обрезает длинные чаты. prompt/completion — цены, у нас 0.
+      tokenConfig:
+        qwen-fast: {prompt: 0, completion: 0, context: 270000}
+        qwen:      {prompt: 0, completion: 0, context: 270000}
+
+    # этап 2 — агенты 1С и Битрикс24 без маскирования (иначе в вызовы инструментов попадут метки вместо ФИО).
+    # Допустимо: удалённый LiteLLM в нашем контуре. Доступ — только профилям с MCP.
+    # - name: "Qwen для 1С и Б24"
+    #   apiKey: "${REMOTE_LITELLM_KEY}"
+    #   baseURL: "${REMOTE_LITELLM_BASE}"
+    #   models:
+    #     default: ["<ИМЯ_МОДЕЛИ_В_УДАЛЁННОМ_LITELLM>"]
+    #     fetch: false
+
+# этап 2:
+# mcpServers:
+#   bitrix24:
+#     type: streamable-http
+#     url: "https://<портал>/mcp"

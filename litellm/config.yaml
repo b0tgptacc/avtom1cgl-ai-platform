@@ -1,0 +1,55 @@
+# LiteLLM на ВМ — прослойка маскирования ПДн перед удалённым LiteLLM (наш контур, модель Qwen).
+# Модели, лимиты и учёт — в удалённом LiteLLM; здесь только маскирование и проброс.
+
+model_list:
+  - model_name: qwen                                   # имя, которое видит LibreChat
+    litellm_params:
+      model: openai/Qwen/Qwen3.8-Flash-Next-FP8   # например openai/qwen-flash — уточнить у владельцев LiteLLM
+      api_base: os.environ/REMOTE_LITELLM_BASE         # https://<удалённый-litellm>/v1
+      api_key: os.environ/REMOTE_LITELLM_KEY
+
+  # та же модель без рассуждений (reasoning) — для перевода и деловых текстов: ответ в разы быстрее.
+  # Проверено на удалённом LiteLLM 21.10: chat_template_kwargs.enable_thinking=false → reasoning_tokens 0.
+  - model_name: qwen-fast
+    litellm_params:
+      model: openai/Qwen/Qwen3.8-Flash-Next-FP8
+      api_base: os.environ/REMOTE_LITELLM_BASE
+      api_key: os.environ/REMOTE_LITELLM_KEY
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+guardrails:
+  - guardrail_name: pii-ru
+    litellm_params:
+      guardrail: pii_guard.PiiRuGuard
+      mode: [pre_call, post_call]
+      default_on: true
+
+# устойчивость к сбоям удалённого LiteLLM (проверено на стенде с LiteLLM 1.106.1, в т.ч. потоковый ответ):
+# таймаут/5xx/«занят» — до 3 попыток с паузой, затем запасная модель; 401/403/404 не повторяются
+# (отказ в доступе от повтора не изменится) — сразу запасная модель. Маскирование выполнено до выбора модели.
+router_settings:
+  num_retries: 2
+  retry_after: 2                    # секунд между попытками
+  timeout: 600                      # согласовано с nginx proxy_read_timeout: документ на 270 тыс. токенов
+  retry_policy:
+    TimeoutErrorRetries: 2
+    RateLimitErrorRetries: 3
+    InternalServerErrorRetries: 2
+    ServiceUnavailableErrorRetries: 2
+    AuthenticationErrorRetries: 0
+    BadRequestErrorRetries: 0
+    DefaultRetries: 0               # 403, 404 и прочие — без повторов
+  allowed_fails: 3
+  cooldown_time: 30
+  fallbacks:
+    - qwen: [qwen-fast]
+    - qwen-fast: [qwen]
+
+litellm_settings:
+  drop_params: true                 # не падать на параметрах, которые удалённая модель не поддерживает
+  turn_off_message_logging: true    # тексты запросов и ответов в журнал LiteLLM не пишем
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

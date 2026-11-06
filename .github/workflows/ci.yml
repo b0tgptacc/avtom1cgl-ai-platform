@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Reject tracked runtime data and private keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden='(^|/)\.env($|\.)|(^|/)(agents-data|uploads|logs|data-node|nginx/certs)(/|$)|\.(pem|key|p12)$'
+          if git ls-files | grep -vE '(^|/)\.env\.example$' | grep -E "$forbidden"; then
+            echo "Forbidden runtime or secret-bearing file is tracked."
+            exit 1
+          fi
+          if git grep -nE -- '-----BEGIN (RSA |EC |OPENSSH |)?PRIVATE KEY-----'; then
+            echo "Private key material is tracked."
+            exit 1
+          fi
+
+      - name: Python and shell syntax
+        run: |
+          set -euo pipefail
+          PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m compileall -q agents doc-translate litellm ocr-ru presidio-ru
+          find scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+
+      - name: Render Compose without production secrets
+        run: |
+          set -euo pipefail
+          cat > .ci.env <<'EOF'
+          LITELLM_MASTER_KEY=ci-placeholder
+          REMOTE_LITELLM_BASE=https://example.invalid/v1
+          REMOTE_LITELLM_KEY=ci-placeholder
+          OCR_API_KEY=ci-placeholder
+          LIBRECHAT_JWT_REFRESH_SECRET=ci-placeholder
+          DOC_INTERNAL_KEY=ci-placeholder
+          DOC_MCP_KEY=ci-placeholder
+          MASK_ENTITIES=PERSON,EMAIL_ADDRESS
+          EOF
+          docker compose --env-file .ci.env config --quiet
+          rm .ci.env
+
+      - name: Build custom service images and run embedded tests
+        run: |
+          set -euo pipefail
+          docker build --pull -t avtom1cgl/agents-router-ci:local agents/router
+          docker build --pull -t avtom1cgl/presidio-ru-ci:local presidio-ru
+          docker build --pull -t avtom1cgl/ocr-ru-ci:local ocr-ru
+          docker build --pull -t avtom1cgl/doc-translate-ci:local doc-translate
