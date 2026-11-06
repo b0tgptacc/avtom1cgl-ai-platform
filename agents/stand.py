@@ -321,6 +321,8 @@ def compose(users: dict, env: dict, images: tuple) -> str:
                     "    environment:",
                     f"      HERMES_UID: '{HERMES_UID}'",
                     f"      HERMES_GID: '{HERMES_UID}'",
+                    "      QUALITY_TOOLS_BASE: \"http://agents-router:8080/quality/v1\"",
+                    f"      QUALITY_TOOLS_API_KEY: \"{u['agent_key']}\"",
                     "    volumes:",
                     f"      - {home}/hermes:/opt/data",
                     f"      - {home}/files-hermes:/opt/data/outbox",
@@ -340,6 +342,8 @@ def compose(users: dict, env: dict, images: tuple) -> str:
                     "      NODE_OPTIONS: --max-old-space-size=1024",
                     "      OPENCLAW_DISABLE_BONJOUR: '1'",
                     f"      OPENCLAW_GATEWAY_TOKEN: \"{u['engines']['openclaw']['key']}\"",
+                    "      QUALITY_TOOLS_BASE: \"http://agents-router:8080/quality/v1\"",
+                    f"      QUALITY_TOOLS_API_KEY: \"{u['agent_key']}\"",
                     "    volumes:",
                     f"      - {home}/openclaw:/home/node/.openclaw",
                     f"      - {home}/files-openclaw:/home/node/.openclaw/workspace/outbox"] + \

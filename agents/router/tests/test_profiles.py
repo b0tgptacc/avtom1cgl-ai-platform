@@ -47,3 +47,15 @@ def test_unknown_request_has_safe_general_profile():
 
     assert profile == "general"
     assert "GENERAL" in result["messages"][-1]["content"]
+
+
+def test_quality_tool_profile_uses_only_the_authenticated_router_bridge():
+    from profiles import apply_profile_policy
+
+    result, _ = apply_profile_policy({"messages": [{"role": "user", "content": "Рассчитай счёт с НДС"}]})
+    policy = result["messages"][-1]["content"]
+
+    assert "QUALITY_TOOLS_BASE" in policy
+    assert "/calculator/invoice" in policy
+    assert "QUALITY_TOOLS_API_KEY" in policy
+    assert "quality-tools:8000" not in policy

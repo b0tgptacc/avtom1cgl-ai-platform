@@ -95,6 +95,51 @@ def test_llm_keys(router):
     assert calls[-1]["body"]["user"] == "petrova@corp.local"
 
 
+def test_agent_can_access_only_typed_quality_tool_routes(router, monkeypatch):
+    """Agents authenticate with their existing per-user key; router is the only bridge."""
+    import app
+    import httpx
+
+    forwarded = []
+
+    def quality_tools(request):
+        forwarded.append({"url": str(request.url), "headers": dict(request.headers), "json": json.loads(request.content)})
+        return httpx.Response(200, json={"total_amount": "64.76"})
+
+    app.client = httpx.AsyncClient(transport=httpx.MockTransport(quality_tools))
+    c, _ = router
+    payload = {"quantity": "3", "unit_price": "19.99", "discount_percent": "10", "vat_percent": "20", "currency": "EUR"}
+
+    assert c.post("/quality/v1/calculator/invoice", json=payload).status_code == 401
+    assert c.post("/quality/v1/calculator/invoice", headers={"Authorization": "Bearer rk-librechat"}, json=payload).status_code == 401
+    response = c.post("/quality/v1/calculator/invoice", headers={"Authorization": "Bearer ak-petrova"}, json=payload)
+    assert response.status_code == 200 and response.json() == {"total_amount": "64.76"}
+    assert len(forwarded) == 1
+    assert forwarded[0]["url"] == "http://quality-tools:8000/v1/calculator/invoice"
+    assert forwarded[0]["json"] == payload
+    assert "authorization" not in forwarded[0]["headers"]
+    assert c.post("/quality/v1/not-an-endpoint", headers={"Authorization": "Bearer ak-petrova"}, json={}).status_code == 404
+
+
+def test_quality_file_operations_are_scoped_to_calling_employee(router, monkeypatch):
+    import app
+    import httpx
+
+    forwarded = []
+
+    def quality_tools(request):
+        forwarded.append(json.loads(request.content))
+        return httpx.Response(200, json=[])
+
+    app.client = httpx.AsyncClient(transport=httpx.MockTransport(quality_tools))
+    c, _ = router
+    response = c.post("/quality/v1/evidence/inventory", headers={"Authorization": "Bearer ak-petrova"},
+                      json={"root": "uploads", "path": "."})
+
+    assert response.status_code == 200
+    assert forwarded == [{"root": "uploads", "path": "89abcdef0123456701234567/."}]
+
+
 def test_files(router):
     c, _ = router
     assert c.get("/agent-files/hermes/перевод.docx").status_code == 401

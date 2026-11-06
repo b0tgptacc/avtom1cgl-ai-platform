@@ -6,7 +6,9 @@ cache: true
 interface:
   privacyPolicy:
     externalUrl: ""
-  # этап 1 — только чат; MCP и внешние инструменты включаем на этапе 2
+  # этап 1 — только чат; MCP и внешние инструменты включаем на этапе 2.
+  # quality-tools намеренно не добавляется сюда: это REST-служба, а не MCP-сервер,
+  # и её маршрут с ключом агента доступен только Hermes/OpenClaw через agents-router.
   mcpServers:
     use: false
     create: false

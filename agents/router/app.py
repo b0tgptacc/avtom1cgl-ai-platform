@@ -36,6 +36,8 @@ ROUTER_KEY = os.getenv("ROUTER_KEY", "")
 LLM_BASE = os.getenv("LLM_BASE", "http://litellm:4000/v1").rstrip("/")
 LLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 SECRET = os.getenv("JWT_REFRESH_SECRET", "")
+QUALITY_BASE = os.getenv("QUALITY_TOOLS_BASE", "http://quality-tools:8000").rstrip("/")
+QUALITY_OPERATIONS = ("evidence/inventory", "evidence/records", "evidence/coverage", "calculator/invoice", "translation-qa", "anonymization-audit", "document-compose/offer", "document-compose/invoice", "document-compose/reports")
 TIMEOUT = httpx.Timeout(float(os.getenv("AGENT_TIMEOUT", "1800")), connect=10)
 ENGINES = {
     "hermes": {"model": "hermes-agent", "port": 8642, "title": "Hermes"},
@@ -266,6 +268,68 @@ def _by_agent_key(key: str):
     return None, None
 
 
+def _scoped_quality_body(operation: str, body: dict, user: dict) -> dict:
+    """Translate agent-local paths to the caller's isolated quality-tools roots."""
+    result = json.loads(json.dumps(body))
+    uploads_prefix = str(user.get("id") or "").strip()
+    work_prefix = user["slug"]
+
+    def scope_location(location: dict) -> None:
+        root = location.get("root")
+        if root == "uploads":
+            if not uploads_prefix:
+                raise ValueError("у сотрудника нет каталога вложений")
+            location["path"] = f"{uploads_prefix}/{location.get('path', '.') }"
+        elif root == "work":
+            location["path"] = f"{work_prefix}/{location.get('path', '.') }"
+
+    if operation == "evidence/inventory":
+        scope_location(result)
+    elif operation == "evidence/records" and isinstance(result.get("paths"), list):
+        root = result.get("root")
+        if root == "uploads" and not uploads_prefix:
+            raise ValueError("у сотрудника нет каталога вложений")
+        prefix = uploads_prefix if root == "uploads" else work_prefix
+        result["paths"] = [f"{prefix}/{path}" for path in result["paths"]]
+    elif operation == "translation-qa" and isinstance(result.get("required_artifacts"), list):
+        for location in result["required_artifacts"]:
+            if isinstance(location, dict):
+                scope_location(location)
+    elif operation == "document-compose/reports" and isinstance(result.get("output_dir"), str):
+        result["output_dir"] = f"{work_prefix}/{result['output_dir']}"
+    return result
+
+
+async def quality_call(request: Request, operation: str | None = None) -> Response:
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    operation = operation or request.path_params["operation"]
+    try:
+        body = await request.json()
+    except ValueError:
+        return _deny(400, "тело запроса должно быть JSON")
+    if not isinstance(body, dict):
+        return _deny(400, "тело запроса должно быть JSON-объектом")
+    try:
+        scoped_body = _scoped_quality_body(operation, body, user)
+    except ValueError as error:
+        return _deny(403, str(error))
+    try:
+        response = await client.post(f"{QUALITY_BASE}/v1/{operation}", json=scoped_body)
+    except httpx.ConnectError:
+        return _deny(503, "quality-tools недоступен")
+    except httpx.TimeoutException:
+        return _deny(504, "quality-tools не ответил вовремя")
+    return Response(response.content, status_code=response.status_code, media_type=response.headers.get("content-type", "application/json"))
+
+
+def quality_endpoint(operation: str):
+    async def endpoint(request: Request) -> Response:
+        return await quality_call(request, operation)
+    return endpoint
+
+
 async def llm_chat(request: Request) -> Response:
     email, user = _by_agent_key(_bearer(request))
     if not user:
@@ -370,7 +434,10 @@ async def health(request: Request) -> Response:
 app = Starlette(routes=[
     Route("/health", health),
     Route("/llm/v1/chat/completions", llm_chat, methods=["POST"]),
+
     Route("/llm/v1/models", llm_models),
+    *[Route(f"/quality/v1/{operation}", quality_endpoint(operation), methods=["POST"],
+            name=f"quality-{operation.replace('/', '-')}") for operation in QUALITY_OPERATIONS],
     Route("/agent-files/rate/{run}/{score}", agent_rate, methods=["GET", "POST"]),
     Route("/agent-files/{engine}/{name:path}", agent_file),
     Route("/{engine}/v1/chat/completions", agent_chat, methods=["POST"]),
