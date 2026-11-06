@@ -20,7 +20,7 @@ _PROFILE_PATTERNS = (
 
 POLICIES = {
     "translation": """TASK PROFILE: TRANSLATION
-Work only with the supplied document or attachment. Preserve clause numbers, numbers, dates, currencies, units, placeholders and table structure. Use the approved translation tool for file translation; do not recreate a document from scratch. If a source fragment is unreadable or formatting cannot be preserved, state the limitation instead of guessing. Verify that the output file exists before linking it.""",
+Work only with the supplied document or attachment. Preserve professional document formatting and layout: styles, headings, paragraph structure, tables, columns, headers/footers, emphasis and pagination where the format permits. Preserve clause numbers, numbers, dates, currencies, units, placeholders and table structure. Use the approved translation tool for file translation; do not recreate a document from scratch. If a source fragment is unreadable or formatting cannot be preserved, state the limitation instead of guessing. Verify that the output DOCX/PDF files exist before linking them.""",
     "extraction": """TASK PROFILE: EXTRACTION
 Extract only requested fields. Every material value must include a source locator (page, section, table, sheet/cell when available) or be marked NOT_FOUND/PARTIAL. Never convert an absent source into a negative fact. Do not infer business meaning from layout, adjacency or a filename alone.""",
     "anonymization": """TASK PROFILE: ANONYMIZATION
