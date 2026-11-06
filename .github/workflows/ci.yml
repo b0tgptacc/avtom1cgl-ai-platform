@@ -34,7 +34,7 @@ jobs:
       - name: Python and shell syntax
         run: |
           set -euo pipefail
-          PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m compileall -q agents doc-translate litellm ocr-ru presidio-ru
+          PYTHONPYCACHEPREFIX="$(mktemp -d)" python3 -m compileall -q agents doc-translate litellm ocr-ru presidio-ru quality-tools document-evidence calculator translation-qa anonymization-audit document-compose
           find scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
 
       - name: Render Compose without production secrets
@@ -48,6 +48,7 @@ jobs:
           LIBRECHAT_JWT_REFRESH_SECRET=ci-placeholder
           DOC_INTERNAL_KEY=ci-placeholder
           DOC_MCP_KEY=ci-placeholder
+          KEYPOOL_AUTH_TOKEN=ci-placeholder
           MASK_ENTITIES=PERSON,EMAIL_ADDRESS
           EOF
           docker compose --env-file .ci.env config --quiet
@@ -61,3 +62,4 @@ jobs:
           docker build --pull -t avtom1cgl/presidio-ru-ci:local presidio-ru
           docker build --pull -t avtom1cgl/ocr-ru-ci:local ocr-ru
           docker build --pull -t avtom1cgl/doc-translate-ci:local doc-translate
+          docker build --pull -f quality-tools/Dockerfile -t avtom1cgl/quality-tools-ci:local .
