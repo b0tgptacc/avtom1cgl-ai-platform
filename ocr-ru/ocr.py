@@ -83,6 +83,9 @@ def image_layout(img: Image.Image) -> list[dict]:
     work = ImageOps.autocontrast(work)
     api = _tesseract(page_langs(work))
     api.SetImage(work)
+    # Tesseract creates its ResultIterator only after recognition. Without this
+    # explicit call the layout endpoint can return a false empty result.
+    api.Recognize()
     iterator = api.GetIterator()
     if iterator is None:
         return []
