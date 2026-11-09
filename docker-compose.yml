@@ -52,6 +52,24 @@ services:
     depends_on: [doc-translate]
     networks: [ai-net]
 
+  # Внутренний REST-инструмент детерминированной проверки/сборки документов.
+  # Порт наружу не публикуется; сервис использует только два разрешённых пути к пользовательским файлам.
+  quality-tools:
+    build:
+      context: .
+      dockerfile: quality-tools/Dockerfile
+    image: avtom1cgl/quality-tools:1.0
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    volumes:
+      - ../librechat/uploads:/uploads:ro
+      - quality-tools-work:/work
+    mem_limit: 512m
+    networks: [ai-net]
+
   # Внутренний key pool: распределяет уже замаскированные запросы по нескольким ключам одного upstream.
   # REMOTE_LITELLM_KEYS — comma/newline-separated дополнительные ключи; пусто = безопасный singleton legacy key.
   upstream-keypool:
@@ -93,6 +111,9 @@ services:
       - ./nginx/ai.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
     networks: [ai-net]
+
+volumes:
+  quality-tools-work:
 
 networks:
   ai-net:

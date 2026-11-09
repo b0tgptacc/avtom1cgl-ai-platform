@@ -1,0 +1,26 @@
+[
+  {
+    "case_id": "offer-complete",
+    "document_type": "offer",
+    "scenario": "All approved offer fields are present.",
+    "expected_status": "PASS"
+  },
+  {
+    "case_id": "offer-unknown-payment-terms",
+    "document_type": "offer",
+    "scenario": "Optional payment terms are unknown and must remain marked.",
+    "expected_status": "PARTIAL"
+  },
+  {
+    "case_id": "invoice-complete",
+    "document_type": "invoice",
+    "scenario": "All approved invoice fields are present.",
+    "expected_status": "PASS"
+  },
+  {
+    "case_id": "invoice-missing-due-date",
+    "document_type": "invoice",
+    "scenario": "Required due date is absent and composition must be blocked.",
+    "expected_status": "BLOCKED"
+  }
+]

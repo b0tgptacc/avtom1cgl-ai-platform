@@ -35,6 +35,20 @@ def _caller(ctx: Context) -> str:
     return headers.get("x-user-id", "")
 
 
+def format_job_result(name: str, job_id: str, job: dict) -> str:
+    """Return links only for files actually produced; warnings never read as success."""
+    labels = {"docx": "Скачать DOCX", "pdf": "Скачать PDF", "qa_report": "Отчёт QA (JSON)"}
+    links = "\n".join(f"- [{labels[key]}](/translate/api/jobs/{job_id}/{key})"
+                      for key in ("docx", "pdf", "qa_report") if job.get("files", {}).get(key))
+    notes = "".join(f"\n- {note}" for note in job.get("notes", []))
+    if job.get("status") == "done_with_warnings":
+        return (f"Перевод документа «{name}» выдан с ПРЕДУПРЕЖДЕНИЕМ: он НЕОПРЕДЕЛЁННЫЙ/НЕПОЛНЫЙ. "
+                f"Не считайте его успешным переводом; сверьте с оригиналом и отчётом QA.\n\n{links}"
+                + (f"\nПримечания:{notes}" if notes else ""))
+    return (f"Перевод документа «{name}» готов:\n\n{links}"
+            + (f"\nПримечания:{notes}" if notes else ""))
+
+
 @mcp.tool()
 async def translate_document(filename: str, target_language: str, ctx: Context) -> str:
     """Перевести документ, который пользователь прикрепил в этот чат, с сохранением вёрстки
@@ -55,16 +69,12 @@ async def translate_document(filename: str, target_language: str, ctx: Context) 
         job = {}
         while time.time() < deadline:
             job = (await web.get(f"/internal/jobs/{job_id}", params={"user": user})).json()
-            if job.get("status") in ("done", "error"):
+            if job.get("status") in ("done", "done_with_warnings", "error"):
                 break
             await asyncio.sleep(3)
 
-    if job.get("status") == "done":
-        notes = "".join(f"\n- {n}" for n in job.get("notes", []))
-        return (f"Перевод документа «{name}» готов:\n\n"
-                f"- [Скачать DOCX](/translate/api/jobs/{job_id}/docx)\n"
-                f"- [Скачать PDF](/translate/api/jobs/{job_id}/pdf)\n"
-                + (f"\nПримечания:{notes}" if notes else ""))
+    if job.get("status") in ("done", "done_with_warnings"):
+        return format_job_result(name, job_id, job)
     if job.get("status") == "error":
         return f"Перевод «{name}» не удался: {job.get('error', 'ошибка')}"
     return (f"Документ «{name}» большой, перевод ещё идёт ({job.get('done', 0)} из {job.get('total', '…')} абзацев). "

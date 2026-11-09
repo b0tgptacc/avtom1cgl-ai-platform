@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("OCR_API_KEY", "test-key")
 
 from app import app  # noqa: E402
-from ocr import receipt_from_qr, recognize  # noqa: E402
+from ocr import image_layout, receipt_from_qr, recognize  # noqa: E402
 
 FONT = os.getenv("TEST_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 FONT_CJK = os.getenv("TEST_FONT_CJK", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc")
@@ -121,6 +121,29 @@ def test_api_data_url_and_no_external_fetch():
     ext = client.post("/v1/ocr", headers=AUTH,
                       json={"document": {"type": "document_url", "document_url": "http://example.com/a.pdf"}})
     assert ext.status_code == 400
+
+
+def test_image_layout_returns_text_and_source_pixel_boxes():
+    image = scan(["IMAGE LAYOUT 2026"])
+    lines = image_layout(image)
+    assert lines
+    assert any(any(character.isalnum() for character in line["text"]) for line in lines)
+    for line in lines:
+        x0, y0, x1, y1 = line["bbox"]
+        assert 0 <= x0 < x1 <= image.width
+        assert 0 <= y0 < y1 <= image.height
+
+
+def test_api_returns_local_ocr_line_boxes(monkeypatch):
+    import app as ocr_app
+    monkeypatch.setattr(ocr_app, "recognize_layout", lambda _data: [{"text": "Договор", "bbox": [10, 20, 90, 45],
+                                                                       "words": [{"text": "Договор", "bbox": [10, 20, 90, 45]}]}])
+    client = app.test_client()
+    data_url = "data:image/png;base64," + base64.b64encode(as_bytes(scan(), "PNG")).decode()
+    response = client.post("/v1/ocr/boxes", headers=AUTH,
+                           json={"document": {"type": "image_url", "image_url": data_url}})
+    assert response.status_code == 200
+    assert response.get_json()["lines"][0]["bbox"] == [10, 20, 90, 45]
 
 
 def test_broken_file():

@@ -12,7 +12,9 @@ from pathlib import Path
 
 from flask import Flask, abort, jsonify, request
 
-from ocr import recognize
+from ocr import image_layout_bytes, recognize
+
+recognize_layout = image_layout_bytes
 
 API_KEY = os.getenv("OCR_API_KEY", "")
 STORE = Path(os.getenv("OCR_STORE", "/tmp/ocr-files"))
@@ -91,6 +93,23 @@ def _load(url: str) -> bytes:
     if url.startswith("data:") and ";base64," in url:
         return base64.b64decode(url.split(";base64,", 1)[1])
     abort(400, "Принимаются только загруженные файлы и data: URL")
+
+
+@app.post("/v1/ocr/boxes")
+def ocr_boxes():
+    """Local raster OCR layout for in-image translation; no external fetches."""
+    body = request.get_json(force=True) or {}
+    doc = body.get("document") or {}
+    url = doc.get("image_url") or doc.get("document_url") or ""
+    data = _load(url)
+    if data[:5] == b"%PDF-":
+        abort(400, "Для разметки принимаются только растровые изображения")
+    try:
+        lines = recognize_layout(data)
+    except Exception as e:
+        log.warning("layout OCR failed: %s", type(e).__name__)
+        abort(422, "Не удалось распознать изображение")
+    return jsonify(lines=lines, model=body.get("model") or "ocr-ru")
 
 
 @app.post("/v1/ocr")

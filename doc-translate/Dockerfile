@@ -11,7 +11,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py convert.py docx_translate.py llm.py mcp_server.py pdf_translate.py page.html ./
+COPY app.py convert.py docx_translate.py image_translate.py llm.py mcp_server.py pdf_translate.py page.html ./
 COPY tests ./tests
 
 # прогон тестов при сборке (вёрстка, повторы запросов, вход по сессии, DOCX → PDF, инструмент агента по MCP)

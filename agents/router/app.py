@@ -36,6 +36,11 @@ ROUTER_KEY = os.getenv("ROUTER_KEY", "")
 LLM_BASE = os.getenv("LLM_BASE", "http://litellm:4000/v1").rstrip("/")
 LLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 SECRET = os.getenv("JWT_REFRESH_SECRET", "")
+QUALITY_BASE = os.getenv("QUALITY_TOOLS_BASE", "http://quality-tools:8000").rstrip("/")
+DOC_TRANSLATE_BASE = os.getenv("DOC_TRANSLATE_BASE", "http://doc-translate:8000").rstrip("/")
+DOC_INTERNAL_KEY = os.getenv("DOC_INTERNAL_KEY", "")
+DOC_TIMEOUT = float(os.getenv("DOC_TRANSLATE_TIMEOUT", "15"))
+QUALITY_OPERATIONS = ("evidence/inventory", "evidence/records", "evidence/coverage", "calculator/invoice", "translation-qa", "anonymization-audit", "document-compose/offer", "document-compose/invoice", "document-compose/reports")
 TIMEOUT = httpx.Timeout(float(os.getenv("AGENT_TIMEOUT", "1800")), connect=10)
 ENGINES = {
     "hermes": {"model": "hermes-agent", "port": 8642, "title": "Hermes"},
@@ -266,6 +271,240 @@ def _by_agent_key(key: str):
     return None, None
 
 
+def _valid_filename(filename: object) -> bool:
+    """Agent bridge accepts a display filename, never an agent-local filesystem path."""
+    return isinstance(filename, str) and bool(NAME_RE.fullmatch(filename)) and filename not in (".", "..")
+
+
+async def _document_request(method: str, path: str, **kwargs) -> httpx.Response:
+    """One short, cancellable hop to doc-translate; deliberately no retries or long polling."""
+    headers = {"X-Internal-Key": DOC_INTERNAL_KEY}
+    url = f"{DOC_TRANSLATE_BASE}{path}"
+    if method == "POST":
+        return await client.post(url, headers=headers, timeout=DOC_TIMEOUT, **kwargs)
+    return await client.get(url, headers=headers, timeout=DOC_TIMEOUT, **kwargs)
+
+
+def _public_document_status(job: dict) -> str:
+    return {"queued": "pending", "running": "running", "done": "completed",
+            "done_with_warnings": "completed_with_warnings", "error": "failed"}.get(job.get("status"), "failed")
+
+
+def _document_result(job_id: str, job: dict) -> dict:
+    files = job.get("files") if isinstance(job.get("files"), dict) else {}
+    return {
+        "job_id": job_id,
+        "name": job.get("name", ""),
+        "status": _public_document_status(job),
+        "progress": {"stage": job.get("stage", ""), "done": job.get("done", 0), "total": job.get("total", 0)},
+        "notes": job.get("notes") if isinstance(job.get("notes"), list) else [],
+        "artifacts": [{"kind": kind, "url": f"/translate/api/jobs/{job_id}/{kind}"}
+                      for kind in ("docx", "pdf", "qa_report") if files.get(kind)],
+        "progress_url": f"/translate/?job={job_id}",
+        **({"error": job["error"]} if isinstance(job.get("error"), str) else {}),
+    }
+
+
+async def document_translate_start(request: Request) -> Response:
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    try:
+        body = await request.json()
+    except ValueError:
+        return _deny(400, "тело запроса должно быть JSON")
+    if not isinstance(body, dict) or not _valid_filename(body.get("filename")):
+        return _deny(400, "нужно только имя прикреплённого файла без пути")
+    target = body.get("target")
+    if not isinstance(target, str) or not target:
+        return _deny(400, "нужен язык перевода")
+    user_id = str(user.get("id") or "")
+    if not re.fullmatch(r"[0-9a-f]{24}", user_id):
+        return _deny(403, "у сотрудника нет каталога вложений")
+    try:
+        response = await _document_request("POST", "/internal/jobs", json={
+            "user": user_id, "filename": body["filename"], "target": target.lower(),
+        })
+    except httpx.ConnectError:
+        return _deny(503, "doc-translate недоступен")
+    except httpx.TimeoutException:
+        return _deny(504, "doc-translate не ответил вовремя")
+    if response.status_code != 200:
+        return Response(response.content, status_code=response.status_code,
+                        media_type=response.headers.get("content-type", "application/json"))
+    try:
+        created = response.json()
+        job_id = created["id"]
+    except (ValueError, KeyError, TypeError):
+        return _deny(502, "doc-translate вернул неверный ответ")
+    if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        return _deny(502, "doc-translate вернул неверный идентификатор задания")
+    return JSONResponse({"job_id": job_id, "name": created.get("name", body["filename"]),
+                         "status": "pending", "progress_url": f"/translate/?job={job_id}"}, status_code=202)
+
+
+async def document_translate_status(request: Request) -> Response:
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    job_id = request.path_params["job_id"]
+    user_id = str(user.get("id") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        return _deny(404, "задание не найдено")
+    if not re.fullmatch(r"[0-9a-f]{24}", user_id):
+        return _deny(403, "у сотрудника нет каталога вложений")
+    try:
+        response = await _document_request("GET", f"/internal/jobs/{job_id}", params={"user": user_id})
+    except httpx.ConnectError:
+        return _deny(503, "doc-translate недоступен")
+    except httpx.TimeoutException:
+        return _deny(504, "doc-translate не ответил вовремя")
+    if response.status_code != 200:
+        return Response(response.content, status_code=response.status_code,
+                        media_type=response.headers.get("content-type", "application/json"))
+    try:
+        job = response.json()
+    except ValueError:
+        return _deny(502, "doc-translate вернул неверный ответ")
+    if not isinstance(job, dict):
+        return _deny(502, "doc-translate вернул неверный ответ")
+    return JSONResponse(_document_result(job_id, job))
+
+
+def _scoped_quality_body(operation: str, body: dict, user: dict) -> dict:
+    """Translate agent-local paths to the caller's isolated quality-tools roots."""
+    result = json.loads(json.dumps(body))
+    uploads_prefix = str(user.get("id") or "").strip()
+    work_prefix = user["slug"]
+
+    def scope_location(location: dict) -> None:
+        root = location.get("root")
+        if root == "uploads":
+            if not uploads_prefix:
+                raise ValueError("у сотрудника нет каталога вложений")
+            location["path"] = f"{uploads_prefix}/{location.get('path', '.') }"
+        elif root == "work":
+            location["path"] = f"{work_prefix}/{location.get('path', '.') }"
+
+    if operation == "evidence/inventory":
+        scope_location(result)
+    elif operation == "evidence/records" and isinstance(result.get("paths"), list):
+        root = result.get("root")
+        if root == "uploads" and not uploads_prefix:
+            raise ValueError("у сотрудника нет каталога вложений")
+        prefix = uploads_prefix if root == "uploads" else work_prefix
+        result["paths"] = [f"{prefix}/{path}" for path in result["paths"]]
+    elif operation == "translation-qa" and isinstance(result.get("required_artifacts"), list):
+        for location in result["required_artifacts"]:
+            if isinstance(location, dict):
+                scope_location(location)
+    elif operation == "document-compose/reports" and isinstance(result.get("output_dir"), str):
+        result["output_dir"] = f"{work_prefix}/{result['output_dir']}"
+    return result
+
+
+async def quality_call(request: Request, operation: str | None = None) -> Response:
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    operation = operation or request.path_params["operation"]
+    try:
+        body = await request.json()
+    except ValueError:
+        return _deny(400, "тело запроса должно быть JSON")
+    if not isinstance(body, dict):
+        return _deny(400, "тело запроса должно быть JSON-объектом")
+    try:
+        scoped_body = _scoped_quality_body(operation, body, user)
+    except ValueError as error:
+        return _deny(403, str(error))
+    try:
+        response = await client.post(f"{QUALITY_BASE}/v1/{operation}", json=scoped_body)
+    except httpx.ConnectError:
+        return _deny(503, "quality-tools недоступен")
+    except httpx.TimeoutException:
+        return _deny(504, "quality-tools не ответил вовремя")
+    return Response(response.content, status_code=response.status_code, media_type=response.headers.get("content-type", "application/json"))
+
+
+def quality_endpoint(operation: str):
+    async def endpoint(request: Request) -> Response:
+        return await quality_call(request, operation)
+    return endpoint
+
+
+MCP_TOOL_DEFINITIONS = (
+    ("evidence_inventory", "evidence/inventory", "Inventory files beneath an isolated uploads or work root."),
+    ("evidence_records", "evidence/records", "Extract canonical, source-located records from selected files."),
+    ("evidence_coverage", "evidence/coverage", "Assess deterministic requirement coverage against extracted records."),
+    ("calculate_invoice", "calculator/invoice", "Calculate invoice totals using Decimal arithmetic."),
+    ("translation_qa", "translation-qa", "Validate a translation against source text and declared artifacts."),
+    ("anonymization_audit", "anonymization-audit", "Audit text for required anonymization patterns."),
+    ("compose_offer", "document-compose/offer", "Compose an offer only from supplied structured fields."),
+    ("compose_invoice", "document-compose/invoice", "Compose an invoice only from supplied structured fields."),
+    ("write_quality_reports", "document-compose/reports", "Write CSV and JSON quality reports inside the caller's work root."),
+)
+
+
+def _mcp_result(request_id: object, result: dict, *, headers: dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result}, headers=headers)
+
+
+async def quality_mcp(request: Request) -> Response:
+    """Small authenticated Streamable HTTP MCP facade over the typed quality routes.
+
+    The router authenticates every request with the existing agent key; discovery never
+    exposes service DNS, filesystem roots, or credentials to either agent runtime.
+    """
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    try:
+        message = await request.json()
+    except ValueError:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "invalid JSON"}}, status_code=400)
+    if not isinstance(message, dict):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}, status_code=400)
+    request_id = message.get("id")
+    method = message.get("method")
+    if method == "initialize":
+        return _mcp_result(request_id, {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "quality-tools", "version": "1.0.0"},
+        }, headers={"Mcp-Session-Id": uuid.uuid4().hex})
+    if method == "notifications/initialized":
+        return Response(status_code=202)
+    if method == "tools/list":
+        return _mcp_result(request_id, {"tools": [
+            {"name": name, "description": description, "inputSchema": {"type": "object", "additionalProperties": True}}
+            for name, _operation, description in MCP_TOOL_DEFINITIONS
+        ]})
+    if method == "tools/call":
+        params = message.get("params")
+        if not isinstance(params, dict) or not isinstance(params.get("name"), str):
+            return JSONResponse({"jsonrpc": "2.0", "id": request_id,
+                                 "error": {"code": -32602, "message": "tool name is required"}}, status_code=400)
+        operations = {name: operation for name, operation, _description in MCP_TOOL_DEFINITIONS}
+        operation = operations.get(params["name"])
+        arguments = params.get("arguments", {})
+        if operation is None or not isinstance(arguments, dict):
+            return _mcp_result(request_id, {"content": [{"type": "text", "text": "unknown tool or invalid arguments"}],
+                                             "isError": True})
+        try:
+            scoped = _scoped_quality_body(operation, arguments, user)
+            response = await client.post(f"{QUALITY_BASE}/v1/{operation}", json=scoped)
+        except httpx.ConnectError:
+            return _mcp_result(request_id, {"content": [{"type": "text", "text": "quality-tools unavailable"}], "isError": True})
+        except httpx.TimeoutException:
+            return _mcp_result(request_id, {"content": [{"type": "text", "text": "quality-tools timeout"}], "isError": True})
+        text = response.text
+        return _mcp_result(request_id, {"content": [{"type": "text", "text": text}],
+                                         "isError": response.status_code >= 400})
+    return JSONResponse({"jsonrpc": "2.0", "id": request_id,
+                         "error": {"code": -32601, "message": "method not found"}}, status_code=400)
+
+
 async def llm_chat(request: Request) -> Response:
     email, user = _by_agent_key(_bearer(request))
     if not user:
@@ -370,7 +609,13 @@ async def health(request: Request) -> Response:
 app = Starlette(routes=[
     Route("/health", health),
     Route("/llm/v1/chat/completions", llm_chat, methods=["POST"]),
+
     Route("/llm/v1/models", llm_models),
+    Route("/document-translate/v1/jobs", document_translate_start, methods=["POST"]),
+    Route("/document-translate/v1/jobs/{job_id}", document_translate_status),
+    Route("/quality/mcp", quality_mcp, methods=["POST"]),
+    *[Route(f"/quality/v1/{operation}", quality_endpoint(operation), methods=["POST"],
+            name=f"quality-{operation.replace('/', '-')}") for operation in QUALITY_OPERATIONS],
     Route("/agent-files/rate/{run}/{score}", agent_rate, methods=["GET", "POST"]),
     Route("/agent-files/{engine}/{name:path}", agent_file),
     Route("/{engine}/v1/chat/completions", agent_chat, methods=["POST"]),

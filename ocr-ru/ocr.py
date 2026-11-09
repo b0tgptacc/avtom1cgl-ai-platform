@@ -73,6 +73,50 @@ def image_text(img: Image.Image) -> str:
     return text
 
 
+def image_layout(img: Image.Image) -> list[dict]:
+    """Text lines and words with boxes in original image pixel coordinates."""
+    original = ImageOps.exif_transpose(img)
+    work = original.convert("L")
+    scale = 2 if min(work.size) < 1000 else 1
+    if scale > 1:
+        work = work.resize((work.width * scale, work.height * scale), Image.LANCZOS)
+    work = ImageOps.autocontrast(work)
+    api = _tesseract(page_langs(work))
+    api.SetImage(work)
+    # Tesseract creates its ResultIterator only after recognition. Without this
+    # explicit call the layout endpoint can return a false empty result.
+    api.Recognize()
+    iterator = api.GetIterator()
+    if iterator is None:
+        return []
+    lines = []
+    level = tesserocr.RIL.TEXTLINE
+    while True:
+        if iterator.IsAtBeginningOf(level):
+            text = (iterator.GetUTF8Text(level) or "").strip()
+            bbox = iterator.BoundingBox(level)
+            if text and bbox:
+                lines.append({"text": text, "bbox": bbox, "words": []})
+        if not iterator.Next(level):
+            break
+    # Component enumeration mutates the Tesseract image state, so perform it
+    # after the line iterator has finished.
+    for _, box, _, _ in api.GetComponentImages(tesserocr.RIL.WORD, text_only=True):
+        x, y, width, height = box["x"], box["y"], box["w"], box["h"]
+        api.SetRectangle(x, y, width, height)
+        word = (api.GetUTF8Text() or "").strip()
+        if not word:
+            continue
+        item = {"text": word, "bbox": [x // scale, y // scale, (x + width) // scale, (y + height) // scale]}
+        for line in lines:
+            if line["bbox"][1] <= y + height / 2 <= line["bbox"][3]:
+                line["words"].append(item)
+                break
+    for line in lines:
+        line["bbox"] = [v // scale for v in line["bbox"]]
+    return lines
+
+
 def receipt_from_qr(text: str) -> str:
     """QR кассового чека: t=20261021T1530&s=1250.00&fn=…&i=…&fp=…&n=1 → реквизиты для проверки чека в ФНС."""
     q = {k: v[0] for k, v in parse_qs(text).items()}
@@ -131,6 +175,11 @@ def image_pages(data: bytes) -> List[str]:
         img.seek(frame)
         pages.append(_page(img.copy()))
     return pages
+
+
+def image_layout_bytes(data: bytes) -> list[dict]:
+    """The layout API is raster-only; PDF callers enumerate their own images."""
+    return image_layout(Image.open(io.BytesIO(data)))
 
 
 def recognize(data: bytes) -> List[str]:

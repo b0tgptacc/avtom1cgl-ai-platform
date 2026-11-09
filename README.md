@@ -10,6 +10,7 @@ The platform combines LibreChat with a private AI gateway and controlled agent r
 Employee → Nginx/TLS → LibreChat → LiteLLM + PII guard → corporate model gateway
                               ├─ local OCR
                               ├─ document translation
+                              ├─ internal document-quality tools
                               └─ agents-router → per-user Hermes/OpenClaw runtimes
 ```
 
@@ -23,6 +24,7 @@ It intentionally does **not** contain runtime secrets, TLS private material, use
 - `litellm/` — model gateway configuration and PII masking guard.
 - `ocr-ru/` — local OCR API for documents and images.
 - `doc-translate/` — document translation and MCP integration.
+- `quality-tools/` — internal-only local REST adapter for document evidence, Decimal invoice calculation, translation QA, anonymization audit, and approved document composition. It has no external HTTP client or secrets; user file paths are constrained to `/uploads` (read-only) and `/work`.
 - `agents/` — per-user Hermes/OpenClaw lifecycle controller and router.
 - `nginx/` — edge proxy configuration.
 - `scripts/` — backup, restore, update and diagnostic utilities.
@@ -39,7 +41,8 @@ It intentionally does **not** contain runtime secrets, TLS private material, use
 ## Security posture
 
 - The remote model receives text through the PII guard only.
-- OCR and document translation are internal services.
+- OCR, document translation, and `quality-tools` are internal services.
+- `quality-tools` publishes no host port and mounts only LibreChat uploads read-only at `/uploads` plus its named work volume at `/work`.
 - Agent containers must remain isolated from the public network and receive only least-privilege mounts.
 - Production deployment is intentionally manual at this stage. The release workflow builds an auditable source artifact; it does not deploy to production.
 

@@ -95,6 +95,51 @@ def test_llm_keys(router):
     assert calls[-1]["body"]["user"] == "petrova@corp.local"
 
 
+def test_agent_can_access_only_typed_quality_tool_routes(router, monkeypatch):
+    """Agents authenticate with their existing per-user key; router is the only bridge."""
+    import app
+    import httpx
+
+    forwarded = []
+
+    def quality_tools(request):
+        forwarded.append({"url": str(request.url), "headers": dict(request.headers), "json": json.loads(request.content)})
+        return httpx.Response(200, json={"total_amount": "64.76"})
+
+    app.client = httpx.AsyncClient(transport=httpx.MockTransport(quality_tools))
+    c, _ = router
+    payload = {"quantity": "3", "unit_price": "19.99", "discount_percent": "10", "vat_percent": "20", "currency": "EUR"}
+
+    assert c.post("/quality/v1/calculator/invoice", json=payload).status_code == 401
+    assert c.post("/quality/v1/calculator/invoice", headers={"Authorization": "Bearer rk-librechat"}, json=payload).status_code == 401
+    response = c.post("/quality/v1/calculator/invoice", headers={"Authorization": "Bearer ak-petrova"}, json=payload)
+    assert response.status_code == 200 and response.json() == {"total_amount": "64.76"}
+    assert len(forwarded) == 1
+    assert forwarded[0]["url"] == "http://quality-tools:8000/v1/calculator/invoice"
+    assert forwarded[0]["json"] == payload
+    assert "authorization" not in forwarded[0]["headers"]
+    assert c.post("/quality/v1/not-an-endpoint", headers={"Authorization": "Bearer ak-petrova"}, json={}).status_code == 404
+
+
+def test_quality_file_operations_are_scoped_to_calling_employee(router, monkeypatch):
+    import app
+    import httpx
+
+    forwarded = []
+
+    def quality_tools(request):
+        forwarded.append(json.loads(request.content))
+        return httpx.Response(200, json=[])
+
+    app.client = httpx.AsyncClient(transport=httpx.MockTransport(quality_tools))
+    c, _ = router
+    response = c.post("/quality/v1/evidence/inventory", headers={"Authorization": "Bearer ak-petrova"},
+                      json={"root": "uploads", "path": "."})
+
+    assert response.status_code == 200
+    assert forwarded == [{"root": "uploads", "path": "89abcdef0123456701234567/."}]
+
+
 def test_files(router):
     c, _ = router
     assert c.get("/agent-files/hermes/перевод.docx").status_code == 401
@@ -162,3 +207,52 @@ def test_rating(monkeypatch, tmp_path, router):
     lines = [json.loads(l) for l in (tmp_path / "stats" / "ratings.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [l["score"] for l in lines] == ["down", "down"] and lines[-1]["comment"] == "сломалась вёрстка"
     assert lines[-1]["engine"] == "openclaw"
+
+
+def test_quality_mcp_discovers_only_typed_tools_for_an_authenticated_agent(router):
+    """Both agent runtimes need an MCP-compatible, authenticated discovery path."""
+    c, _ = router
+    headers = {"Authorization": "Bearer ak-petrova"}
+
+    initialize = c.post("/quality/mcp", headers=headers, json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}},
+    })
+    assert initialize.status_code == 200
+    session_id = initialize.headers["mcp-session-id"]
+    assert initialize.json()["result"]["serverInfo"]["name"] == "quality-tools"
+
+    listed = c.post("/quality/mcp", headers={**headers, "Mcp-Session-Id": session_id},
+                    json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    assert listed.status_code == 200
+    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+    assert names == {"evidence_inventory", "evidence_records", "evidence_coverage", "calculate_invoice",
+                     "translation_qa", "anonymization_audit", "compose_offer", "compose_invoice", "write_quality_reports"}
+
+    assert c.post("/quality/mcp", json={"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}).status_code == 401
+
+
+def test_quality_mcp_tool_call_forwards_only_mapped_operation(router, monkeypatch):
+    import app
+    import httpx
+
+    forwarded = []
+
+    def quality_tools(request):
+        forwarded.append({"url": str(request.url), "json": json.loads(request.content)})
+        return httpx.Response(200, json={"total_amount": "64.76"})
+
+    app.client = httpx.AsyncClient(transport=httpx.MockTransport(quality_tools))
+    c, _ = router
+    response = c.post("/quality/mcp", headers={"Authorization": "Bearer ak-petrova"}, json={
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "calculate_invoice", "arguments": {
+            "quantity": "3", "unit_price": "19.99", "discount_percent": "10", "vat_percent": "20", "currency": "EUR",
+        }},
+    })
+
+    assert response.status_code == 200
+    assert json.loads(response.json()["result"]["content"][0]["text"]) == {"total_amount": "64.76"}
+    assert forwarded == [{"url": "http://quality-tools:8000/v1/calculator/invoice", "json": {
+        "quantity": "3", "unit_price": "19.99", "discount_percent": "10", "vat_percent": "20", "currency": "EUR",
+    }}]
