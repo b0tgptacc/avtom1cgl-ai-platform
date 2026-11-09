@@ -11,8 +11,9 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(bridge)
 
 
-def test_remote_translation_accepts_only_an_attachment_filename_and_language():
+def test_remote_translation_accepts_an_agent_upload_mount_or_attachment_filename_and_language():
     assert bridge.remote_request(["uploads/Supply Agreement.docx", "--to", "EN"]) == ("Supply Agreement.docx", "en")
+    assert bridge.remote_request(["/opt/data/uploads/uuid__Supply Agreement.docx", "--to", "ru"]) == ("uuid__Supply Agreement.docx", "ru")
 
     for argv in (["/etc/passwd", "--to", "en"], ["uploads/nested/contract.docx", "--to", "en"],
                  ["uploads/contract.docx", "--to", "en", "--out", "outbox"], ["uploads/contract.docx"]):

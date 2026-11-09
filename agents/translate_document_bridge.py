@@ -30,8 +30,10 @@ def remote_request(argv: list[str]) -> tuple[str, str]:
     if len(argv) != 3 or argv[1] != "--to" or not argv[2].strip():
         raise UsageError("Используйте: translate-document uploads/<имя-файла> --to ru|en|zh")
     path = PurePosixPath(argv[0])
-    if path.is_absolute() or len(path.parts) != 2 or path.parts[0] != "uploads" or path.name in ("", ".", ".."):
-        raise UsageError("Для перевода укажите только вложение вида uploads/<имя-файла>")
+    attachment = (not path.is_absolute() and len(path.parts) == 2 and path.parts[0] == "uploads")
+    mounted = (path.is_absolute() and path.parts[:4] == ("/", "opt", "data", "uploads") and len(path.parts) == 5)
+    if not (attachment or mounted) or ".." in path.parts or path.name in ("", ".", ".."):
+        raise UsageError("Для перевода укажите вложение uploads/<имя-файла>")
     return path.name, argv[2].lower()
 
 
