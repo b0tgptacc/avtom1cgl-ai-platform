@@ -21,6 +21,7 @@ OCR_BASE = os.getenv("OCR_BASE", "http://ocr-ru:8000/v1").rstrip("/")
 OCR_KEY = os.getenv("OCR_API_KEY", "")
 OCR_TIMEOUT = float(os.getenv("OCR_TIMEOUT", "60"))
 MIN_IMAGE_SIDE = int(os.getenv("IMAGE_TRANSLATE_MIN_SIDE", "80"))
+MIN_RENDER_FONT = int(os.getenv("IMAGE_TRANSLATE_MIN_FONT", "3"))
 FONT_PATHS = [p for p in os.getenv("IMAGE_TRANSLATE_FONTS", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
                                   "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf:"
                                   "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc").split(":") if p] + ["C:/Windows/Fonts/arial.ttf"]
@@ -71,8 +72,8 @@ def _render(image: Image.Image, lines: List[dict], translations: List[str]) -> b
         if x1 <= x0 or y1 <= y0 or x0 < 0 or y0 < 0 or x1 > canvas.width or y1 > canvas.height:
             raise ValueError("OCR line box outside image")
         # Fit a translated line inside its original area; if it cannot fit, do not corrupt the image.
-        font = _font(max(6, int((y1 - y0) * 0.9)))
-        while font.size > 6 and draw.textbbox((0, 0), text, font=font)[2] > x1 - x0:
+        font = _font(max(MIN_RENDER_FONT, int((y1 - y0) * 0.9)))
+        while font.size > MIN_RENDER_FONT and draw.textbbox((0, 0), text, font=font)[2] > x1 - x0:
             font = _font(font.size - 1)
         if draw.textbbox((0, 0), text, font=font)[2] > x1 - x0:
             raise ValueError("translated text does not fit OCR line box")
