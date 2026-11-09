@@ -330,6 +330,78 @@ def quality_endpoint(operation: str):
     return endpoint
 
 
+MCP_TOOL_DEFINITIONS = (
+    ("evidence_inventory", "evidence/inventory", "Inventory files beneath an isolated uploads or work root."),
+    ("evidence_records", "evidence/records", "Extract canonical, source-located records from selected files."),
+    ("evidence_coverage", "evidence/coverage", "Assess deterministic requirement coverage against extracted records."),
+    ("calculate_invoice", "calculator/invoice", "Calculate invoice totals using Decimal arithmetic."),
+    ("translation_qa", "translation-qa", "Validate a translation against source text and declared artifacts."),
+    ("anonymization_audit", "anonymization-audit", "Audit text for required anonymization patterns."),
+    ("compose_offer", "document-compose/offer", "Compose an offer only from supplied structured fields."),
+    ("compose_invoice", "document-compose/invoice", "Compose an invoice only from supplied structured fields."),
+    ("write_quality_reports", "document-compose/reports", "Write CSV and JSON quality reports inside the caller's work root."),
+)
+
+
+def _mcp_result(request_id: object, result: dict, *, headers: dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result}, headers=headers)
+
+
+async def quality_mcp(request: Request) -> Response:
+    """Small authenticated Streamable HTTP MCP facade over the typed quality routes.
+
+    The router authenticates every request with the existing agent key; discovery never
+    exposes service DNS, filesystem roots, or credentials to either agent runtime.
+    """
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    try:
+        message = await request.json()
+    except ValueError:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "invalid JSON"}}, status_code=400)
+    if not isinstance(message, dict):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}, status_code=400)
+    request_id = message.get("id")
+    method = message.get("method")
+    if method == "initialize":
+        return _mcp_result(request_id, {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "quality-tools", "version": "1.0.0"},
+        }, headers={"Mcp-Session-Id": uuid.uuid4().hex})
+    if method == "notifications/initialized":
+        return Response(status_code=202)
+    if method == "tools/list":
+        return _mcp_result(request_id, {"tools": [
+            {"name": name, "description": description, "inputSchema": {"type": "object", "additionalProperties": True}}
+            for name, _operation, description in MCP_TOOL_DEFINITIONS
+        ]})
+    if method == "tools/call":
+        params = message.get("params")
+        if not isinstance(params, dict) or not isinstance(params.get("name"), str):
+            return JSONResponse({"jsonrpc": "2.0", "id": request_id,
+                                 "error": {"code": -32602, "message": "tool name is required"}}, status_code=400)
+        operations = {name: operation for name, operation, _description in MCP_TOOL_DEFINITIONS}
+        operation = operations.get(params["name"])
+        arguments = params.get("arguments", {})
+        if operation is None or not isinstance(arguments, dict):
+            return _mcp_result(request_id, {"content": [{"type": "text", "text": "unknown tool or invalid arguments"}],
+                                             "isError": True})
+        try:
+            scoped = _scoped_quality_body(operation, arguments, user)
+            response = await client.post(f"{QUALITY_BASE}/v1/{operation}", json=scoped)
+        except httpx.ConnectError:
+            return _mcp_result(request_id, {"content": [{"type": "text", "text": "quality-tools unavailable"}], "isError": True})
+        except httpx.TimeoutException:
+            return _mcp_result(request_id, {"content": [{"type": "text", "text": "quality-tools timeout"}], "isError": True})
+        text = response.text
+        return _mcp_result(request_id, {"content": [{"type": "text", "text": text}],
+                                         "isError": response.status_code >= 400})
+    return JSONResponse({"jsonrpc": "2.0", "id": request_id,
+                         "error": {"code": -32601, "message": "method not found"}}, status_code=400)
+
+
 async def llm_chat(request: Request) -> Response:
     email, user = _by_agent_key(_bearer(request))
     if not user:
@@ -436,6 +508,7 @@ app = Starlette(routes=[
     Route("/llm/v1/chat/completions", llm_chat, methods=["POST"]),
 
     Route("/llm/v1/models", llm_models),
+    Route("/quality/mcp", quality_mcp, methods=["POST"]),
     *[Route(f"/quality/v1/{operation}", quality_endpoint(operation), methods=["POST"],
             name=f"quality-{operation.replace('/', '-')}") for operation in QUALITY_OPERATIONS],
     Route("/agent-files/rate/{run}/{score}", agent_rate, methods=["GET", "POST"]),

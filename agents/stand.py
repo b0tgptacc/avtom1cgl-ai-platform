@@ -166,6 +166,14 @@ model:
   base_url: http://agents-router:8080/llm/v1
   api_key: {agent_key}
   context_length: {CONTEXT}
+# Typed, per-agent MCP bridge; the key is scoped to this agent and never reaches quality-tools.
+mcp_servers:
+  quality_tools:
+    url: http://agents-router:8080/quality/mcp
+    headers:
+      Authorization: "Bearer {agent_key}"
+    timeout: 120
+    connect_timeout: 30
 terminal:
   backend: local
   cwd: /opt/data/workspace
@@ -207,6 +215,10 @@ def openclaw_config(agent_key: str, token: str) -> str:
                         "contextWindow": CONTEXT, "maxTokens": 32768}],
         }}},
         "agents": {"defaults": {"model": f"gw/{AGENT_MODEL}", "workspace": "/home/node/.openclaw/workspace"}},
+        "mcp": {"servers": {"quality-tools": {
+            "url": "http://agents-router:8080/quality/mcp", "transport": "streamable-http",
+            "headers": {"Authorization": f"Bearer {agent_key}"}, "timeout": 120, "connectTimeout": 30,
+        }}},
         "skills": {"load": {"extraDirs": ["/skills/dept", "/skills/company", "/skills/common"]}},
         "tools": {
             "profile": "coding",  # fs + runtime only; no browser/search/messaging surface in corporate document profile
