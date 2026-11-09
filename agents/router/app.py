@@ -37,6 +37,9 @@ LLM_BASE = os.getenv("LLM_BASE", "http://litellm:4000/v1").rstrip("/")
 LLM_KEY = os.getenv("LITELLM_MASTER_KEY", "")
 SECRET = os.getenv("JWT_REFRESH_SECRET", "")
 QUALITY_BASE = os.getenv("QUALITY_TOOLS_BASE", "http://quality-tools:8000").rstrip("/")
+DOC_TRANSLATE_BASE = os.getenv("DOC_TRANSLATE_BASE", "http://doc-translate:8000").rstrip("/")
+DOC_INTERNAL_KEY = os.getenv("DOC_INTERNAL_KEY", "")
+DOC_TIMEOUT = float(os.getenv("DOC_TRANSLATE_TIMEOUT", "15"))
 QUALITY_OPERATIONS = ("evidence/inventory", "evidence/records", "evidence/coverage", "calculator/invoice", "translation-qa", "anonymization-audit", "document-compose/offer", "document-compose/invoice", "document-compose/reports")
 TIMEOUT = httpx.Timeout(float(os.getenv("AGENT_TIMEOUT", "1800")), connect=10)
 ENGINES = {
@@ -266,6 +269,106 @@ def _by_agent_key(key: str):
         if key and key == u.get("agent_key"):
             return email, u
     return None, None
+
+
+def _valid_filename(filename: object) -> bool:
+    """Agent bridge accepts a display filename, never an agent-local filesystem path."""
+    return isinstance(filename, str) and bool(NAME_RE.fullmatch(filename)) and filename not in (".", "..")
+
+
+async def _document_request(method: str, path: str, **kwargs) -> httpx.Response:
+    """One short, cancellable hop to doc-translate; deliberately no retries or long polling."""
+    headers = {"X-Internal-Key": DOC_INTERNAL_KEY}
+    url = f"{DOC_TRANSLATE_BASE}{path}"
+    if method == "POST":
+        return await client.post(url, headers=headers, timeout=DOC_TIMEOUT, **kwargs)
+    return await client.get(url, headers=headers, timeout=DOC_TIMEOUT, **kwargs)
+
+
+def _public_document_status(job: dict) -> str:
+    return {"queued": "pending", "running": "running", "done": "completed",
+            "done_with_warnings": "completed_with_warnings", "error": "failed"}.get(job.get("status"), "failed")
+
+
+def _document_result(job_id: str, job: dict) -> dict:
+    files = job.get("files") if isinstance(job.get("files"), dict) else {}
+    return {
+        "job_id": job_id,
+        "name": job.get("name", ""),
+        "status": _public_document_status(job),
+        "progress": {"stage": job.get("stage", ""), "done": job.get("done", 0), "total": job.get("total", 0)},
+        "notes": job.get("notes") if isinstance(job.get("notes"), list) else [],
+        "artifacts": [{"kind": kind, "url": f"/translate/api/jobs/{job_id}/{kind}"}
+                      for kind in ("docx", "pdf", "qa_report") if files.get(kind)],
+        "progress_url": f"/translate/?job={job_id}",
+        **({"error": job["error"]} if isinstance(job.get("error"), str) else {}),
+    }
+
+
+async def document_translate_start(request: Request) -> Response:
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    try:
+        body = await request.json()
+    except ValueError:
+        return _deny(400, "тело запроса должно быть JSON")
+    if not isinstance(body, dict) or not _valid_filename(body.get("filename")):
+        return _deny(400, "нужно только имя прикреплённого файла без пути")
+    target = body.get("target")
+    if not isinstance(target, str) or not target:
+        return _deny(400, "нужен язык перевода")
+    user_id = str(user.get("id") or "")
+    if not re.fullmatch(r"[0-9a-f]{24}", user_id):
+        return _deny(403, "у сотрудника нет каталога вложений")
+    try:
+        response = await _document_request("POST", "/internal/jobs", json={
+            "user": user_id, "filename": body["filename"], "target": target.lower(),
+        })
+    except httpx.ConnectError:
+        return _deny(503, "doc-translate недоступен")
+    except httpx.TimeoutException:
+        return _deny(504, "doc-translate не ответил вовремя")
+    if response.status_code != 200:
+        return Response(response.content, status_code=response.status_code,
+                        media_type=response.headers.get("content-type", "application/json"))
+    try:
+        created = response.json()
+        job_id = created["id"]
+    except (ValueError, KeyError, TypeError):
+        return _deny(502, "doc-translate вернул неверный ответ")
+    if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        return _deny(502, "doc-translate вернул неверный идентификатор задания")
+    return JSONResponse({"job_id": job_id, "name": created.get("name", body["filename"]),
+                         "status": "pending", "progress_url": f"/translate/?job={job_id}"}, status_code=202)
+
+
+async def document_translate_status(request: Request) -> Response:
+    _email, user = _by_agent_key(_bearer(request))
+    if not user:
+        return _deny(401, "неверный ключ агента")
+    job_id = request.path_params["job_id"]
+    user_id = str(user.get("id") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        return _deny(404, "задание не найдено")
+    if not re.fullmatch(r"[0-9a-f]{24}", user_id):
+        return _deny(403, "у сотрудника нет каталога вложений")
+    try:
+        response = await _document_request("GET", f"/internal/jobs/{job_id}", params={"user": user_id})
+    except httpx.ConnectError:
+        return _deny(503, "doc-translate недоступен")
+    except httpx.TimeoutException:
+        return _deny(504, "doc-translate не ответил вовремя")
+    if response.status_code != 200:
+        return Response(response.content, status_code=response.status_code,
+                        media_type=response.headers.get("content-type", "application/json"))
+    try:
+        job = response.json()
+    except ValueError:
+        return _deny(502, "doc-translate вернул неверный ответ")
+    if not isinstance(job, dict):
+        return _deny(502, "doc-translate вернул неверный ответ")
+    return JSONResponse(_document_result(job_id, job))
 
 
 def _scoped_quality_body(operation: str, body: dict, user: dict) -> dict:
@@ -508,6 +611,8 @@ app = Starlette(routes=[
     Route("/llm/v1/chat/completions", llm_chat, methods=["POST"]),
 
     Route("/llm/v1/models", llm_models),
+    Route("/document-translate/v1/jobs", document_translate_start, methods=["POST"]),
+    Route("/document-translate/v1/jobs/{job_id}", document_translate_status),
     Route("/quality/mcp", quality_mcp, methods=["POST"]),
     *[Route(f"/quality/v1/{operation}", quality_endpoint(operation), methods=["POST"],
             name=f"quality-{operation.replace('/', '-')}") for operation in QUALITY_OPERATIONS],

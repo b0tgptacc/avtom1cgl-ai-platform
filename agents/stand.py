@@ -138,12 +138,12 @@ def read_users() -> list:
         rows.append((email, dept, chosen))
     return rows
 
-# перевод документов: Hermes — готовой командой целиком; OpenClaw переводит сам (с переводом команды выходило хуже,
+# перевод документов: Hermes — через короткий мост в doc-translate; OpenClaw переводит сам (с переводом команды выходило хуже,
 # решение 22.10), а команда только раскладывает его перевод по местам оригинала (--extract / --apply, 26.10)
 TRANSLATE = {
-    "hermes": "- Перевод файла — только командой `translate-document` (навык document-tools): она сохраняет вёрстку"
-              " DOCX, PDF\n  и сканов. Свой код перевода документа не пиши. Мы за качество, а не за скорость:"
-              " дождись результата и проверь его.",
+    "hermes": "- Перевод файла — только командой `translate-document uploads/<имя> --to ru|en|zh` (навык document-tools)."
+              " Она ставит асинхронное задание в doc-translate и быстро вернёт ссылку на прогресс/скачивание;"
+              " не жди десятки минут и не запускай второй раз. Свой код перевода документа не пиши.",
     "openclaw": """- Перевод документа (DOCX, PDF, скан) переводишь сам, а вёрстку оригинала сохраняет команда
   `translate-document` — свой код сборки документа не пиши, документ не пересоздавай:
   1. `translate-document uploads/<файл> --to ru --extract --out work` → `work/<имя>.segments.json`
@@ -177,7 +177,7 @@ mcp_servers:
 terminal:
   backend: local
   cwd: /opt/data/workspace
-  timeout: 3600              # перевод большого документа (translate-document) идёт десятки минут
+  timeout: 60                # translate-document ставит задачу и делает короткий ограниченный опрос
 skills:
   external_dirs:
     - /skills/dept
@@ -309,7 +309,9 @@ def compose(users: dict, env: dict, images: tuple) -> str:
            f"      ROUTER_KEY: \"{env['AGENTS_ROUTER_KEY']}\"",
            f"      LITELLM_MASTER_KEY: \"{env['LITELLM_MASTER_KEY']}\"",
            f"      JWT_REFRESH_SECRET: \"{env['LIBRECHAT_JWT_REFRESH_SECRET']}\"",
+           f"      DOC_INTERNAL_KEY: \"{env['DOC_INTERNAL_KEY']}\"",
            "      LLM_BASE: http://litellm:4000/v1",
+           "      DOC_TRANSLATE_BASE: http://doc-translate:8000",
            "    volumes:",
            f"      - {DATA}/users.json:/data/users.json:ro",
            f"      - {DATA}/users:/data/users:ro",
@@ -335,10 +337,13 @@ def compose(users: dict, env: dict, images: tuple) -> str:
                     f"      HERMES_GID: '{HERMES_UID}'",
                     "      QUALITY_TOOLS_BASE: \"http://agents-router:8080/quality/v1\"",
                     f"      QUALITY_TOOLS_API_KEY: \"{u['agent_key']}\"",
+                    "      DOCUMENT_TRANSLATE_BASE: \"http://agents-router:8080/document-translate/v1\"",
+                    f"      DOCUMENT_TRANSLATE_API_KEY: \"{u['agent_key']}\"",
                     "    volumes:",
                     f"      - {home}/hermes:/opt/data",
                     f"      - {home}/files-hermes:/opt/data/outbox",
                     f"      - {DATA}/skills/tools:/skills/tools:ro",
+                    f"      - {HERE}/translate_document_bridge.py:/usr/local/bin/translate-document:ro",
                     f"      - {home}/llm.env:/etc/agent/llm.env:ro"] + \
                    ([f"      - {uploads}:/opt/data/uploads:ro"] if uploads else []) + skills + common
         if "openclaw" in u["engines"]:
@@ -373,7 +378,7 @@ def build_images() -> str:
     digest = (HERE / "hermes.digest").read_text(encoding="utf-8").strip()
     # метка образа — от содержимого images/: поменяли набор инструментов — образы пересоберутся
     sources = sorted(p for p in (HERE / "images").iterdir() if p.is_file()) + \
-        [HERE.parent / "doc-translate" / n for n in ("docx_translate.py", "pdf_translate.py", "llm.py")]
+        [HERE / "translate_document_bridge.py"] + [HERE.parent / "doc-translate" / n for n in ("docx_translate.py", "pdf_translate.py", "llm.py")]
     tools = hashlib.sha256(b"".join(p.read_bytes() for p in sources)).hexdigest()[:8]
     hermes = HERMES_IMAGE.format(tag=f"{digest[:12]}-{tools}")
     openclaw = OPENCLAW_IMAGE.format(tools=tools)
@@ -398,6 +403,7 @@ def cmd_up() -> None:
     os.chmod(DATA, 0o750)                    # ключи и память сотрудников — только root (контейнерам — через монтирование)
     gw_env = GW / ".env"
     ensure_env_key(gw_env, "AGENTS_ROUTER_KEY", secrets.token_hex(24))
+    ensure_env_key(gw_env, "DOC_INTERNAL_KEY", secrets.token_hex(24))
     ensure_env_key(LC / ".env", "AGENTS_ROUTER_KEY", env_file(gw_env)["AGENTS_ROUTER_KEY"])
     env = env_file(gw_env)
     for k in ("LITELLM_MASTER_KEY", "LIBRECHAT_JWT_REFRESH_SECRET"):
