@@ -125,5 +125,9 @@ def test_live_health_arguments_require_http_urls_and_known_services() -> None:
 def test_component_runner_uses_document_translation_venv_when_present() -> None:
     interpreter = qa.component_python(ROOT / "doc-translate")
 
-    assert interpreter.name.lower() in {"python.exe", "python"}
-    assert ".venv" in {part.lower() for part in interpreter.parts}
+    expected_venvs = [ROOT / "doc-translate" / ".venv" / "Scripts" / "python.exe",
+                     ROOT / "doc-translate" / ".venv" / "bin" / "python"]
+    if any(path.is_file() for path in expected_venvs):
+        assert ".venv" in {part.lower() for part in interpreter.parts}
+    else:
+        assert interpreter == Path(sys.executable)
