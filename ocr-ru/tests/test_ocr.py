@@ -123,6 +123,18 @@ def test_api_data_url_and_no_external_fetch():
     assert ext.status_code == 400
 
 
+def test_api_returns_local_ocr_line_boxes(monkeypatch):
+    import app as ocr_app
+    monkeypatch.setattr(ocr_app, "recognize_layout", lambda _data: [{"text": "Договор", "bbox": [10, 20, 90, 45],
+                                                                       "words": [{"text": "Договор", "bbox": [10, 20, 90, 45]}]}])
+    client = app.test_client()
+    data_url = "data:image/png;base64," + base64.b64encode(as_bytes(scan(), "PNG")).decode()
+    response = client.post("/v1/ocr/boxes", headers=AUTH,
+                           json={"document": {"type": "image_url", "image_url": data_url}})
+    assert response.status_code == 200
+    assert response.get_json()["lines"][0]["bbox"] == [10, 20, 90, 45]
+
+
 def test_broken_file():
     client = app.test_client()
     data_url = "data:application/pdf;base64," + base64.b64encode(b"%PDF-1.4 broken").decode()
