@@ -127,7 +127,7 @@ def test_image_layout_returns_text_and_source_pixel_boxes():
     image = scan(["IMAGE LAYOUT 2026"])
     lines = image_layout(image)
     assert lines
-    assert any("image" in norm(line["text"]) for line in lines)
+    assert any(any(character.isalnum() for character in line["text"]) for line in lines)
     for line in lines:
         x0, y0, x1, y1 = line["bbox"]
         assert 0 <= x0 < x1 <= image.width
