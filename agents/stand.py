@@ -144,17 +144,9 @@ TRANSLATE = {
     "hermes": "- Перевод файла — только командой `translate-document uploads/<имя> --to ru|en|zh` (навык document-tools)."
               " Она ставит асинхронное задание в doc-translate и быстро вернёт ссылку на прогресс/скачивание;"
               " не жди десятки минут и не запускай второй раз. Свой код перевода документа не пиши.",
-    "openclaw": """- Перевод документа (DOCX, PDF, скан) переводишь сам, а вёрстку оригинала сохраняет команда
-  `translate-document` — свой код сборки документа не пиши, документ не пересоздавай:
-  1. `translate-document uploads/<файл> --to ru --extract --out work` → `work/<имя>.segments.json`
-     (абзацы документа в поле `text`, скан распознаётся сам).
-  2. Переведи каждый абзац и впиши в поле `result`: полностью, без пересказа, термины одинаково во всём
-     документе. Маркеры ⟦n⟧…⟦/n⟧ (жирный, курсив) сохрани. Номера пунктов, числа, единицы и формулы
-     не меняй. Свои пометки в текст не добавляй. Большой файл переводи частями по 30–50 абзацев
-     (читай и записывай JSON скриптом, а не руками).
-  3. `translate-document work/<имя>.segments.json --apply --out outbox` → PDF (главный результат,
-     страницы как в оригинале) и DOCX для правки.
-  Замечания переводчика (неразборчивые места, спорные термины) — в ответе в чате, не в документе.""",
+    "openclaw": "- Перевод файла — только командой `translate-document uploads/<имя> --to ru|en|zh` (навык document-tools)."
+                " Она ставит асинхронное задание в doc-translate и быстро вернёт ссылку на прогресс/скачивание;"
+                " не жди десятки минут и не запускай второй раз. Свой код перевода документа не пиши.",
 }
 
 
@@ -361,9 +353,12 @@ def compose(users: dict, env: dict, images: tuple) -> str:
                     f"      OPENCLAW_GATEWAY_TOKEN: \"{u['engines']['openclaw']['key']}\"",
                     "      QUALITY_TOOLS_BASE: \"http://agents-router:8080/quality/v1\"",
                     f"      QUALITY_TOOLS_API_KEY: \"{u['agent_key']}\"",
+                    "      DOCUMENT_TRANSLATE_BASE: \"http://agents-router:8080/document-translate/v1\"",
+                    f"      DOCUMENT_TRANSLATE_API_KEY: \"{u['agent_key']}\"",
                     "    volumes:",
                     f"      - {home}/openclaw:/home/node/.openclaw",
-                    f"      - {home}/files-openclaw:/home/node/.openclaw/workspace/outbox"] + \
+                    f"      - {home}/files-openclaw:/home/node/.openclaw/workspace/outbox",
+                    f"      - {HERE}/translate_document_bridge.py:/usr/local/bin/translate-document:ro"] + \
                    ([f"      - {uploads}:/home/node/.openclaw/workspace/uploads:ro"] if uploads else []) + skills + common
     out += ["networks:",
             "  ai-net: {external: true}",

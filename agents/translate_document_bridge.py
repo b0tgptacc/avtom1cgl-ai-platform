@@ -31,7 +31,9 @@ def remote_request(argv: list[str]) -> tuple[str, str]:
         raise UsageError("Используйте: translate-document uploads/<имя-файла> --to ru|en|zh")
     path = PurePosixPath(argv[0])
     attachment = (not path.is_absolute() and len(path.parts) == 2 and path.parts[0] == "uploads")
-    mounted = (path.is_absolute() and path.parts[:4] == ("/", "opt", "data", "uploads") and len(path.parts) == 5)
+    mounted_roots = (("/", "opt", "data", "uploads"), ("/", "home", "node", ".openclaw", "workspace", "uploads"))
+    mounted = path.is_absolute() and any(path.parts[:len(root)] == root and len(path.parts) == len(root) + 1
+                                             for root in mounted_roots)
     if not (attachment or mounted) or ".." in path.parts or path.name in ("", ".", ".."):
         raise UsageError("Для перевода укажите вложение uploads/<имя-файла>")
     return path.name, argv[2].lower()

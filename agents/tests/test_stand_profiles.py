@@ -39,7 +39,7 @@ def test_agent_compose_exposes_only_router_quality_tool_bridge():
     assert rendered.count("QUALITY_TOOLS_API_KEY: \"ak-ivanov\"") == 2
     assert "quality-tools:8000" not in rendered
     assert "DOC_INTERNAL_KEY: \"doc-internal-secret\"" in rendered
-    assert rendered.count("DOCUMENT_TRANSLATE_BASE: \"http://agents-router:8080/document-translate/v1\"") == 1
-    assert rendered.count("DOCUMENT_TRANSLATE_API_KEY: \"ak-ivanov\"") == 1
+    assert rendered.count("DOCUMENT_TRANSLATE_BASE: \"http://agents-router:8080/document-translate/v1\"") == 2
+    assert rendered.count("DOCUMENT_TRANSLATE_API_KEY: \"ak-ivanov\"") == 2
     assert "/usr/local/bin/translate-document:ro" in rendered
     assert rendered.count("doc-internal-secret") == 1  # router only; no agent gets the service secret
