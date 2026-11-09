@@ -28,6 +28,7 @@
   .job ul { margin:8px 0 0; padding-left:18px; color:var(--muted); font-size:14px; }
   .err { color:var(--err); }
   .done { color:var(--ok); }
+  .warn { color:#9a6500; font-weight:700; }
   small { color:var(--muted); }
 </style>
 </head>
@@ -80,18 +81,29 @@ async function poll(id, el) {
   const r = await fetch("api/jobs/" + id);
   if (!r.ok) { el.querySelector(".stage").innerHTML = '<span class="err">задание не найдено</span>'; return; }
   const j = await r.json();
-  const pct = j.status === "done" ? 100 : j.total ? Math.round(80 * j.done / j.total) + 10 : 5;
+  const pct = (j.status === "done" || j.status === "done_with_warnings") ? 100 : j.total ? Math.round(80 * j.done / j.total) + 10 : 5;
   el.querySelector(".bar i").style.width = pct + "%";
   el.querySelector(".stage").textContent = j.stage + (j.stage === "перевод" && j.total ? ` — ${j.done} из ${j.total} абзацев` : "");
   el.querySelector("ul").innerHTML = "";
   (j.notes || []).forEach((n) => { const li = document.createElement("li"); li.textContent = n; el.querySelector("ul").append(li); });
   if (j.status === "done") {
     el.querySelector(".stage").innerHTML = '<span class="done">готово</span>';
-    el.querySelector(".links").innerHTML = `<a href="api/jobs/${id}/docx">Скачать DOCX</a><a href="api/jobs/${id}/pdf">Скачать PDF</a>`;
+    el.querySelector(".links").innerHTML = jobLinks(id, j.files);
+    return;
+  }
+  if (j.status === "done_with_warnings") {
+    el.querySelector(".stage").innerHTML = '<span class="warn">выдано с предупреждением — перевод неполный/неопределённый, сверьте с оригиналом</span>';
+    el.querySelector(".links").innerHTML = jobLinks(id, j.files);
     return;
   }
   if (j.status === "error") { el.querySelector(".stage").innerHTML = '<span class="err"></span>'; el.querySelector(".err").textContent = j.error; return; }
   setTimeout(() => poll(id, el), 2000);
+}
+
+function jobLinks(id, files) {
+  const labels = {docx: "Скачать DOCX", pdf: "Скачать PDF", qa_report: "Отчёт QA (JSON)"};
+  return Object.keys(labels).filter((key) => files && files[key])
+    .map((key) => `<a href="api/jobs/${id}/${key}">${labels[key]}</a>`).join("");
 }
 
 $("go").onclick = async () => {

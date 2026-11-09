@@ -3,6 +3,7 @@
 Файлы — только на ВМ, удаляются через сутки; скачать может только тот, кто загрузил. Текст — через шлюз маскирования.
 /internal/* — для инструмента агента (mcp_server.py): не проксируется nginx, требует INTERNAL_KEY; файл берётся из загрузок
 LibreChat этого пользователя (/uploads/<id пользователя>, только чтение)."""
+import json
 import logging
 import os
 import re
@@ -13,10 +14,14 @@ import uuid
 from pathlib import Path
 
 import jwt
+import pymupdf
+from docx import Document
+from docx.shared import RGBColor
 from flask import Flask, abort, jsonify, request, send_file
 
 from convert import is_scan, pdf_to_docx, to_docx, to_pdf
 from docx_translate import translate_docx
+from image_translate import translate_docx_images, translate_pdf_images
 from llm import LANGS, make_translator
 from pdf_translate import ocr_layer, translate_pdf
 
@@ -66,23 +71,119 @@ def cleanup():
             jobs.pop(job_id, None)
 
 
+WARNING_RU = "НЕПОЛНЫЙ / НЕОПРЕДЕЛЁННЫЙ ПЕРЕВОД — сверяйте с оригиналом; см. отчёт QA"
+WARNING_PDF = "UNCERTAIN / INCOMPLETE TRANSLATION — CHECK AGAINST ORIGINAL; SEE QA REPORT"
+
+
+def _mark_docx_warning(path: Path) -> None:
+    """Put an unmistakable warning in every section header without discarding content."""
+    doc = Document(path)
+    for section in doc.sections:
+        paragraph = section.header.paragraphs[0] if section.header.paragraphs else section.header.add_paragraph()
+        run = paragraph.add_run((" | " if paragraph.text else "") + WARNING_RU)
+        run.bold = True
+        run.font.color.rgb = RGBColor(192, 0, 0)
+    doc.save(path)
+
+
+def _mark_pdf_warning(path: Path) -> None:
+    """Stamp only page one so a fallback PDF remains recognisably the original."""
+    with pymupdf.open(path) as doc:
+        if not len(doc):
+            raise ValueError("empty PDF")
+        page = doc[0]
+        box = pymupdf.Rect(24, 18, page.rect.width - 24, min(58, page.rect.height - 12))
+        page.draw_rect(box, color=(0.75, 0, 0), fill=(1, 0.92, 0.92), width=0.8, overlay=True)
+        spare = page.insert_textbox(box + (4, 4, -4, -4), WARNING_PDF, fontsize=8, fontname="hebo",
+                                    color=(0.65, 0, 0), align=pymupdf.TEXT_ALIGN_CENTER, overlay=True)
+        if spare < 0:
+            raise ValueError("PDF warning does not fit")
+        doc.save(path.with_suffix(".stamped.pdf"), garbage=3, deflate=True)
+    path.with_suffix(".stamped.pdf").replace(path)
+
+
+def _qa_report(source_text: str, translated_text: str, artifacts: dict[str, Path]) -> dict:
+    """Small local deterministic check; the JSON is delivery evidence, not linguistic approval."""
+    import re
+    from collections import Counter
+    token = re.compile(r"<[^<>\s]+>|\{\{[^{}\s]+\}\}|⟦/?\d+⟧")
+    date = re.compile(r"(?<!\d)(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})(?!\d)")
+    number = re.compile(r"(?<![\w.,])[-+]?\d{1,3}(?:[ ,]\d{3})+(?:[.,]\d+)?(?![\w.,])|(?<![\w.,])[-+]?\d+(?:[.,]\d+)?(?![\w.,])")
+
+    def values(text, expression):
+        text = token.sub(" ", text) if expression is number else text
+        text = date.sub(" ", text) if expression is number else text
+        return expression.findall(text)
+
+    def missing(expression):
+        remaining = Counter(values(translated_text, expression))
+        absent = []
+        for value in values(source_text, expression):
+            if remaining[value]:
+                remaining[value] -= 1
+            else:
+                absent.append(value)
+        return absent
+
+    report = {"missing_tokens": missing(token), "missing_numbers": missing(number),
+              "missing_dates": missing(date),
+              "missing_artifacts": [name for name, path in artifacts.items() if not path.is_file()]}
+    report["status"] = "PASS" if not any(report.values()) else "FAIL"
+    return report
+
+
+def _write_qa_report(workdir: Path, report: dict) -> Path:
+    report_path = workdir / "translation-qa-report.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    return report_path
+
+
+def _warning_artifacts(src: Path, docx_in: Path | None, out_docx: Path, out_pdf: Path) -> dict[str, Path]:
+    """Keep a usable translated artifact when present, otherwise a visibly marked original."""
+    artifacts: dict[str, Path] = {}
+    docx_source = out_docx if out_docx.is_file() else (src if src.suffix.lower() == ".docx" else docx_in)
+    if docx_source and docx_source.is_file():
+        marked = out_docx.with_name(out_docx.stem + ".uncertain.docx")
+        if docx_source != marked:
+            shutil.copyfile(docx_source, marked)
+        try:
+            _mark_docx_warning(marked)
+            artifacts["docx"] = marked
+        except Exception:
+            log.warning("could not mark DOCX fallback", exc_info=True)
+    pdf_source = out_pdf if out_pdf.is_file() else (src if src.suffix.lower() == ".pdf" else None)
+    if pdf_source and pdf_source.is_file():
+        marked = out_pdf.with_name(out_pdf.stem + ".uncertain.pdf")
+        if pdf_source != marked:
+            shutil.copyfile(pdf_source, marked)
+        try:
+            _mark_pdf_warning(marked)
+            artifacts["pdf"] = marked
+        except Exception:
+            log.warning("could not stamp PDF fallback", exc_info=True)
+    return artifacts
+
+
 def run_job(job_id: str, src: Path, target: str):
     job, workdir = jobs[job_id], JOBS_DIR / job_id
     with slots:
         job["status"] = "running"
         started = time.time()
+        docx_in = None
+        out_docx, out_pdf = workdir / f"{src.stem}.{target}.docx", workdir / f"{src.stem}.{target}.pdf"
         try:
             def progress(done, total):
                 job.update(stage="перевод", done=done, total=total)
 
             job["stage"] = "подготовка документа"
-            out_docx, out_pdf = workdir / f"{src.stem}.{target}.docx", workdir / f"{src.stem}.{target}.pdf"
+            translator = make_translator(target)
             if src.suffix.lower() == ".pdf" and not is_scan(src):
                 # PDF с текстом переводится на месте: линии, колонки и таблицы не пересобираются;
                 # скан с готовым слоем OCR — тоже на месте, но под строками забеливается картинка
                 layered = ocr_layer(str(src))
-                segments = translate_pdf(str(src), str(out_pdf), make_translator(target), target, progress,
+                segments = translate_pdf(str(src), str(out_pdf), translator, target, progress,
                                          scan=layered)
+                job["notes"].extend(translate_pdf_images(str(out_pdf), target, translator))
                 if layered:
                     job["notes"].append("скан с распознанным текстом: перевод поверх картинки — "
                                         "сверьте цифры, даты и имена с оригиналом")
@@ -94,7 +195,8 @@ def run_job(job_id: str, src: Path, target: str):
                 docx_in, how = to_docx(src, workdir)
                 if how:
                     job["notes"].append(how)
-                segments = translate_docx(str(docx_in), str(out_docx), make_translator(target), progress)
+                segments = translate_docx(str(docx_in), str(out_docx), translator, progress)
+                job["notes"].extend(translate_docx_images(str(out_docx), target, translator))
                 job["stage"] = "сборка PDF"
                 out_pdf = to_pdf(out_docx, workdir)
             failed = sum(1 for s in segments if s.result is None)
@@ -103,12 +205,40 @@ def run_job(job_id: str, src: Path, target: str):
                 job["notes"].append(f"не переведено абзацев: {failed} (оставлен оригинал)")
             if lost:
                 job["notes"].append(f"абзацев без сохранённого выделения слов: {lost}")
-            job.update(status="done", stage="готово", files={"docx": out_docx.name, "pdf": out_pdf.name})
+            artifacts = {"docx": out_docx, "pdf": out_pdf}
+            report = _qa_report("\n".join(s.source for s in segments),
+                                "\n".join(s.result or "" for s in segments), artifacts)
+            if failed:
+                report.update(status="FAIL", failure_type="translation_incomplete", failed_segments=failed)
+            if report["status"] == "FAIL":
+                report.setdefault("failure_type", "post_translation_qa")
+                report_path = _write_qa_report(workdir, report)
+                marked = _warning_artifacts(src, docx_in, out_docx, out_pdf)
+                if marked:
+                    marked["qa_report"] = report_path
+                    job["notes"].append("перевод не прошёл проверку: скачайте файл только как неполный и сверьте с оригиналом")
+                    job.update(status="done_with_warnings", stage="готово с предупреждениями",
+                               files={name: path.name for name, path in marked.items()})
+                else:
+                    job.update(status="error", stage="ошибка", files={},
+                               error="Не удалось подготовить документ для безопасной выдачи.")
+            else:
+                job.update(status="done", stage="готово", files={name: path.name for name, path in artifacts.items()})
             log.info("job %s: user %s, %d segments, %d failed, %.0f s",
                      job_id, job["user"], len(segments), failed, time.time() - started)
         except Exception as e:      # пользователю — понятное сообщение, в журнал — тип ошибки без содержимого
-            job.update(status="error", stage="ошибка", error=str(e) if isinstance(e, ValueError)
-                       else "Не удалось обработать документ. Попробуйте DOCX или обратитесь в ИТ.")
+            report = {"status": "FAIL", "failure_type": "translation_error", "error_class": type(e).__name__,
+                      "missing_tokens": [], "missing_numbers": [], "missing_dates": [], "missing_artifacts": []}
+            report_path = _write_qa_report(workdir, report)
+            marked = _warning_artifacts(src, docx_in, out_docx, out_pdf)
+            if marked:
+                marked["qa_report"] = report_path
+                job["notes"].append("перевод не завершён: выдан сохранённый документ с предупреждением и отчётом QA")
+                job.update(status="done_with_warnings", stage="готово с предупреждениями",
+                           files={name: path.name for name, path in marked.items()})
+            else:
+                job.update(status="error", stage="ошибка", files={}, error=str(e) if isinstance(e, ValueError)
+                           else "Не удалось обработать документ. Попробуйте DOCX или обратитесь в ИТ.")
             log.warning("job %s failed: %s", job_id, type(e).__name__)
         finally:
             src.unlink(missing_ok=True)

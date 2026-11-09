@@ -26,6 +26,7 @@ os.environ["DOC_MCP_KEY"] = "mcp-test-key"
 
 import llm  # noqa: E402
 from docx_translate import translate_docx  # noqa: E402
+from image_translate import translate_docx_images, translate_pdf_images, translate_raster_image  # noqa: E402
 
 needs_soffice = pytest.mark.skipif(shutil.which("soffice") is None, reason="нет LibreOffice")
 
@@ -101,6 +102,71 @@ def test_text_outside_markers(tmp_path):
     assert "ПОСТАВЩИК" in "".join(r[0] for r in runs(out, "ПОСТАВЩИК") if r[1])
 
 
+# --- текст внутри растровых картинок ---------------------------------------------------------------
+
+def _image_bytes(text="Hello"):
+    from PIL import Image, ImageDraw
+    image = Image.new("RGB", (240, 80), "white")
+    ImageDraw.Draw(image).text((20, 25), text, fill="black")
+    data = io.BytesIO()
+    image.save(data, "PNG")
+    return data.getvalue()
+
+
+def test_raster_image_text_is_translated_in_place():
+    source = _image_bytes()
+
+    def ocr(_data):
+        return [{"text": "Hello", "bbox": [20, 25, 60, 40]}]
+
+    def translate(segments, progress):
+        for segment in segments:
+            segment.result = "Привет"
+        progress(len(segments), len(segments))
+
+    rendered, notes = translate_raster_image(source, "ru", translate, ocr)
+    from PIL import Image
+    out = Image.open(io.BytesIO(rendered))
+    assert out.size == (240, 80)
+    assert rendered != source
+    assert notes == []
+
+
+def test_raster_image_ocr_failure_preserves_original_bytes():
+    source = _image_bytes()
+
+    def broken_ocr(_data):
+        raise RuntimeError("OCR unavailable")
+
+    rendered, notes = translate_raster_image(source, "ru", upper_translator, broken_ocr)
+    assert rendered == source
+    assert len(notes) == 1 and "OCR" in notes[0]
+
+
+def test_docx_and_pdf_embedded_rasters_are_replaced_only_after_render(monkeypatch, tmp_path):
+    source = _image_bytes()
+    recognize = lambda _data: [{"text": "Hello", "bbox": [20, 25, 60, 40]}]
+
+    docx_path = tmp_path / "image.docx"
+    doc = Document()
+    doc.add_picture(io.BytesIO(source))
+    doc.save(docx_path)
+    assert translate_docx_images(str(docx_path), "ru", upper_translator, recognize) == []
+    embedded = next(rel.target_part.blob for rel in Document(docx_path).part.rels.values() if "image" in rel.reltype)
+    assert embedded != source
+
+    import pymupdf
+    pdf_path = tmp_path / "image.pdf"
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    page.insert_image(pymupdf.Rect(30, 30, 270, 110), stream=source)
+    pdf.save(pdf_path)
+    assert translate_pdf_images(str(pdf_path), "ru", upper_translator, recognize) == []
+    out = pymupdf.open(pdf_path)
+    assert out.extract_image(out[0].get_images(full=True)[0][0])["image"] != source
+    out.close()
+
+
 # --- запросы к модели через поддельный сервер ------------------------------------------------------
 
 @pytest.fixture()
@@ -158,7 +224,7 @@ def test_auth():
 def _wait(c, job_id):
     for _ in range(120):
         j = c.get(f"/translate/api/jobs/{job_id}").get_json()
-        if j["status"] in ("done", "error"):
+        if j["status"] in ("done", "done_with_warnings", "error"):
             return j
         time.sleep(0.5)
     raise AssertionError("задание не завершилось")
@@ -296,6 +362,102 @@ def test_rejects_unsupported():
     c.set_cookie("refreshToken", token())
     r = c.post("/translate/api/jobs", data={"target": "ru", "file": (io.BytesIO(b"x"), "a.exe")})
     assert r.status_code == 400
+
+
+# --- fail-open delivery: an uncertain document is safer than a silent loss ------------------------
+
+def _run_local_job(monkeypatch, tmp_path, source: Path, *, translate_error=None, qa_failure=False):
+    """Run synchronously with deterministic translators/converters, avoiding LibreOffice."""
+    import app
+    from docx_translate import Segment
+    workdir = tmp_path / "fail-open"
+    workdir.mkdir()
+    src = workdir / source.name
+    shutil.copyfile(source, src)
+    app.JOBS_DIR = tmp_path
+    app.jobs["fail-open"] = {"user": "u1", "created": time.time(), "status": "queued", "stage": "в очереди",
+                             "done": 0, "total": 0, "notes": [], "files": {}, "name": source.name, "target": "ru"}
+
+    if translate_error:
+        monkeypatch.setattr(app, "translate_docx", lambda *_args, **_kwargs: (_ for _ in ()).throw(translate_error))
+    else:
+        def translated(_src, dst, _translator, _progress):
+            shutil.copyfile(_src, dst)
+            return [Segment(1, [], "Pay 30 days", "Оплатить позднее" if qa_failure else "Pay 30 days")]
+        monkeypatch.setattr(app, "translate_docx", translated)
+        monkeypatch.setattr(app, "to_pdf", lambda _src, work: _make_pdf(Path(work) / "out.pdf"))
+    app.run_job("fail-open", src, "ru")
+    return app.jobs["fail-open"], app
+
+
+def _make_pdf(path: Path) -> Path:
+    import pymupdf
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "translated document")
+    doc.save(path)
+    return path
+
+
+def test_translation_exception_delivers_marked_original_and_machine_readable_report(monkeypatch, tmp_path):
+    from app import app
+    sample_docx(tmp_path / "contract.docx")
+
+    job, module = _run_local_job(monkeypatch, tmp_path, tmp_path / "contract.docx", translate_error=RuntimeError("upstream down"))
+
+    assert job["status"] == "done_with_warnings"
+    assert set(job["files"]) == {"docx", "qa_report"}
+    marked = Document(tmp_path / "fail-open" / job["files"]["docx"])
+    assert "НЕПОЛНЫЙ" in marked.sections[0].header.paragraphs[0].text
+    report = json.loads((tmp_path / "fail-open" / job["files"]["qa_report"]).read_text(encoding="utf-8"))
+    assert report["status"] == "FAIL" and report["failure_type"] == "translation_error"
+    c = app.test_client()
+    c.set_cookie("refreshToken", token())
+    assert c.get("/translate/api/jobs/fail-open/qa_report").status_code == 200
+
+
+def test_failed_post_translation_qa_marks_docx_and_pdf_and_is_not_reported_as_success(monkeypatch, tmp_path):
+    import pymupdf
+    sample_docx(tmp_path / "contract.docx")
+
+    job, _module = _run_local_job(monkeypatch, tmp_path, tmp_path / "contract.docx", qa_failure=True)
+
+    assert job["status"] == "done_with_warnings"
+    assert {"docx", "pdf", "qa_report"} <= set(job["files"])
+    assert "НЕПОЛНЫЙ" in Document(tmp_path / "fail-open" / job["files"]["docx"]).sections[0].header.paragraphs[0].text
+    page_text = pymupdf.open(tmp_path / "fail-open" / job["files"]["pdf"])[0].get_text()
+    assert "UNCERTAIN / INCOMPLETE TRANSLATION" in page_text
+    report = json.loads((tmp_path / "fail-open" / job["files"]["qa_report"]).read_text(encoding="utf-8"))
+    assert report["status"] == "FAIL" and report["failure_type"] == "post_translation_qa"
+
+
+def test_no_recoverable_document_artifact_remains_an_error(monkeypatch, tmp_path):
+    import app
+    workdir = tmp_path / "no-artifact"
+    workdir.mkdir()
+    src = workdir / "legacy.doc"
+    src.write_bytes(b"not a document")
+    app.JOBS_DIR = tmp_path
+    app.jobs["no-artifact"] = {"user": "u1", "created": time.time(), "status": "queued", "stage": "в очереди",
+                               "done": 0, "total": 0, "notes": [], "files": {}, "name": src.name, "target": "ru"}
+    monkeypatch.setattr(app, "to_docx", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("conversion failed")))
+
+    app.run_job("no-artifact", src, "ru")
+
+    assert app.jobs["no-artifact"]["status"] == "error"
+    assert not app.jobs["no-artifact"]["files"]
+
+
+def test_mcp_and_ui_present_uncertain_delivery_as_warning_not_success():
+    import mcp_server
+    page = (Path(__file__).resolve().parents[1] / "page.html").read_text(encoding="utf-8")
+
+    message = mcp_server.format_job_result("contract.docx", "abc", {
+        "status": "done_with_warnings", "notes": ["QA failed"],
+        "files": {"docx": "contract.ru.docx", "qa_report": "translation-qa.json"},
+    })
+
+    assert "НЕОПРЕДЕЛЁН" in message and "Скачать DOCX" in message and "Отчёт QA" in message
+    assert "done_with_warnings" in page and "qa_report" in page
 
 
 # --- инструмент агента: файл из чата → перевод → ссылки ---------------------------------------------
